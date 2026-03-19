@@ -1,27 +1,80 @@
 /**
- * Main monitor screen — live torus + dance ID + BPM + signal quality.
- * This is the primary user-facing screen. Data flows from pulse source →
- * quality gate → pipeline → display components.
+ * Main monitor screen — the full Phase 1 pipeline running end-to-end.
+ *
+ * Data flow:
+ * 1. Data source (simulated or BLE) produces PPIs
+ * 2. Quality gate filters PPIs (handled in simulated pulse ox)
+ * 3. Valid PPIs feed into pipeline (dual normalization)
+ * 4. Every beat: compute torus point (adaptive for display, fixed for features)
+ * 5. Every 10 beats: compute κ median, Gini, spread → match dance
+ * 6. Update all display components
+ * 7. Session records all data
  */
-import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, ScrollView } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import {
+  View, Text, StyleSheet, SafeAreaView, ScrollView, useWindowDimensions,
+} from 'react-native';
 import { useSimulatedPulseOx } from '../../src/hooks/use-simulated-pulse-ox';
 import { useMonitorPipeline } from '../../src/hooks/use-monitor-pipeline';
+import { useSessionRecorder } from '../../src/hooks/use-session-recorder';
 import { useDataSource } from '../../src/context/data-source-context';
 import { SignalQualityBadge } from '../../src/display/SignalQualityBadge';
 import { BPMDisplay } from '../../src/display/BPMDisplay';
+import { TorusDisplay } from '../../src/display/TorusDisplay';
+import { DanceCard } from '../../src/display/DanceCard';
+import { ThreeQuestions } from '../../src/display/ThreeQuestions';
+import { MetricsRow } from '../../src/display/MetricsRow';
+import { sessionStore } from './history';
 
 export default function MonitorScreen() {
+  const { width } = useWindowDimensions();
+  const torusSize = Math.min(width - 32, 300);
   const { simulatedScenario } = useDataSource();
   const pulseOx = useSimulatedPulseOx(simulatedScenario);
-  const { state, processPPI } = useMonitorPipeline();
+  const { state, processPPI, reset } = useMonitorPipeline();
+  const { recState, startSession, recordBeat, endSession } = useSessionRecorder();
+
+  const sessionStarted = useRef(false);
 
   // Feed PPIs from pulse source into the pipeline
   useEffect(() => {
     if (pulseOx.latestPPI !== null) {
       processPPI(pulseOx.latestPPI);
+
+      // Auto-start session on first valid PPI
+      if (!sessionStarted.current) {
+        startSession();
+        sessionStarted.current = true;
+      }
+
+      // Record beat for session
+      recordBeat(state.danceMatch);
     }
-  }, [pulseOx.latestPPI, processPPI]);
+  }, [pulseOx.latestPPI]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-end session when disconnected
+  const disconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (pulseOx.connectionStatus === 'disconnected' && sessionStarted.current) {
+      // Auto-end after 5 minutes of disconnection
+      disconnectTimer.current = setTimeout(async () => {
+        const session = endSession();
+        if (session && session.beatCount > 0) {
+          await sessionStore.saveSession(session);
+        }
+        sessionStarted.current = false;
+        reset();
+      }, 5 * 60 * 1000);
+    } else if (disconnectTimer.current) {
+      clearTimeout(disconnectTimer.current);
+      disconnectTimer.current = null;
+    }
+    return () => {
+      if (disconnectTimer.current) clearTimeout(disconnectTimer.current);
+    };
+  }, [pulseOx.connectionStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const danceName = state.danceMatch?.name ?? null;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -48,25 +101,40 @@ export default function MonitorScreen() {
         {/* BPM display */}
         <BPMDisplay bpm={state.bpm} sourceName={pulseOx.sourceName} />
 
-        {/* Placeholder: Torus display goes here (Step 8) */}
-        <View style={styles.placeholder}>
-          <Text style={styles.placeholderText}>Torus Display</Text>
-          <Text style={styles.placeholderSub}>
-            {state.totalBeats} beats • {state.displayPoints.length} points
-          </Text>
-        </View>
+        {/* Dance card */}
+        <DanceCard match={state.danceMatch} />
 
-        {/* Placeholder: Dance card (Step 9) */}
-        <View style={styles.placeholder}>
-          <Text style={styles.placeholderText}>
-            {state.danceMatch
-              ? `${state.danceMatch.name} (${Math.round(state.danceMatch.confidence * 100)}%)`
-              : 'Waiting for data...'}
-          </Text>
-        </View>
+        {/* Torus display */}
+        <TorusDisplay
+          points={state.displayPoints}
+          danceName={danceName}
+          size={torusSize}
+        />
 
-        {/* Placeholder: Three questions (Step 10) */}
-        {/* Placeholder: Metrics row (Step 11) */}
+        {/* Three questions */}
+        <ThreeQuestions
+          isDancing={state.isDancing}
+          currentDance={state.danceMatch}
+          changeLevel="learning"
+        />
+
+        {/* Metrics row */}
+        <MetricsRow
+          bpm={state.bpm ?? 0}
+          kappa={state.kappaMedian}
+          gini={state.gini}
+          sigma={null}
+        />
+
+        {/* Session info */}
+        {recState.isRecording && (
+          <View style={styles.sessionInfo}>
+            <Text style={styles.sessionText}>
+              Recording • {recState.beatCount} beats •{' '}
+              {Math.floor(recState.elapsedMs / 1000)}s
+            </Text>
+          </View>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -82,6 +150,7 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
+    paddingBottom: 32,
   },
   disclaimer: {
     backgroundColor: '#1a1a2e',
@@ -106,22 +175,13 @@ const styles = StyleSheet.create({
     color: '#64748b',
     fontSize: 12,
   },
-  placeholder: {
-    backgroundColor: '#0a0a1a',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#1a1a2e',
-    padding: 24,
-    marginVertical: 8,
+  sessionInfo: {
     alignItems: 'center',
+    paddingVertical: 8,
   },
-  placeholderText: {
-    color: '#64748b',
-    fontSize: 16,
-  },
-  placeholderSub: {
+  sessionText: {
     color: '#475569',
     fontSize: 12,
-    marginTop: 4,
+    fontFamily: 'monospace',
   },
 });
