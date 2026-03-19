@@ -44,6 +44,17 @@ Both targets share the same torus math and dance centroids. The `shared/` direct
 - **Storage:** ESP32 NVS (non-volatile storage) for baseline
 - **Build:** PlatformIO
 
+## Critical Discovery: Fixed vs Adaptive Normalization
+
+Found during initial build (Steps 1–5): **dance identification requires fixed normalization bounds (PPI_MIN=300, PPI_MAX=1500), not adaptive percentile-based normalization.** When the angle mapping uses the individual's narrow PPI range (adaptive), κ and Gini shift to values that do NOT match the empirical centroids from the research papers. The centroids were calibrated against population-wide bounds.
+
+**Rule:**
+- **Dance identification** → fixed normalization (PPI_MIN/PPI_MAX constants)
+- **Torus visualization** → adaptive normalization (2nd–98th percentile of last 60 beats) for better visual spread
+- **Change detection** → either works (relative to personal baseline, not absolute centroids)
+
+The `torus-engine` functions accept `min`/`max` parameters. The caller decides which bounds to pass depending on the use case. Do not hardcode either normalization strategy inside the engine.
+
 ## Architecture Principles
 
 1. **Shared math, separate platforms.** The torus algorithm, dance centroids, and quality thresholds are defined once in `shared/` and consumed by both app and firmware. Any change to the math must update both.
