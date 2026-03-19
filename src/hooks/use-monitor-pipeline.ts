@@ -1,11 +1,11 @@
 /**
- * Monitor pipeline hook — owns ring buffers, torus computation, and dance matching.
- * Consumes PPIs from any source (BLE or simulated) and produces all display state.
+ * Monitor pipeline hook — owns ring buffers, torus computation, dance matching,
+ * baseline learning, and change detection.
  *
  * Uses FIXED normalization (PPI_MIN/PPI_MAX) for dance matching features.
  * Uses ADAPTIVE normalization (2nd/98th percentile) for torus display points.
  */
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import {
   toAngle, mengerCurvature, giniCoefficient,
   median, mean, std,
@@ -13,9 +13,12 @@ import {
 import { matchDance } from '../../shared/dance-matcher';
 import {
   PPI_MIN, PPI_MAX, TORUS_WINDOW, KAPPA_WINDOW,
-  DANCE_UPDATE_INTERVAL, CONFIDENCE_UNCERTAIN,
+  DANCE_UPDATE_INTERVAL,
 } from '../../shared/constants';
-import type { TorusPoint, DanceMatch } from '../../shared/types';
+import type { TorusPoint, DanceMatch, ChangeStatus } from '../../shared/types';
+import { BaselineService } from '../baseline/baseline-service';
+import { ChangeDetector, type ChangeLevel } from '../baseline/change-detector';
+import { MemoryStorage, type StorageAdapter } from '../session/session-store';
 
 export interface PipelineState {
   /** Torus points for display (adaptive normalization) */
@@ -34,9 +37,28 @@ export interface PipelineState {
   totalBeats: number;
   /** Whether we have enough data to be "dancing" */
   isDancing: boolean;
+  /** Change detection status */
+  changeStatus: ChangeStatus;
+  /** Change level (convenience) */
+  changeLevel: ChangeLevel;
+  /** Baseline learning progress (0-1) */
+  baselineLearningProgress: number;
+  /** Whether baseline is currently being learned */
+  isLearningBaseline: boolean;
+  /** Baseline beat count (for display) */
+  baselineBeatCount: number;
 }
 
-export function useMonitorPipeline() {
+const DEFAULT_CHANGE_STATUS: ChangeStatus = {
+  mahalanobisDistance: 0,
+  level: 'learning',
+  sustainedSince: null,
+};
+
+export function useMonitorPipeline(storage?: StorageAdapter) {
+  const baselineService = useRef(new BaselineService(storage ?? new MemoryStorage()));
+  const changeDetector = useRef(new ChangeDetector());
+
   const [state, setState] = useState<PipelineState>({
     displayPoints: [],
     danceMatch: null,
@@ -46,6 +68,11 @@ export function useMonitorPipeline() {
     spread: 0,
     totalBeats: 0,
     isDancing: false,
+    changeStatus: DEFAULT_CHANGE_STATUS,
+    changeLevel: 'learning',
+    baselineLearningProgress: 0,
+    isLearningBaseline: true,
+    baselineBeatCount: 0,
   });
 
   // Ring buffers (mutable refs — no re-render on push)
@@ -55,13 +82,12 @@ export function useMonitorPipeline() {
   const featurePoints = useRef<TorusPoint[]>([]);
   const totalBeats = useRef(0);
 
-  // Adaptive normalization bounds (updated every 10 beats)
+  // Adaptive normalization bounds
   const adaptiveMin = useRef(PPI_MIN);
   const adaptiveMax = useRef(PPI_MAX);
   const beatsSinceAdaptiveUpdate = useRef(0);
 
   const processPPI = useCallback((ppi: number) => {
-    // Push to PPI buffer
     ppiBuffer.current.push(ppi);
     if (ppiBuffer.current.length > TORUS_WINDOW) ppiBuffer.current.shift();
     totalBeats.current++;
@@ -82,25 +108,23 @@ export function useMonitorPipeline() {
     const prevPPI = buf[n - 2];
     const currPPI = buf[n - 1];
 
-    // --- DISPLAY points (adaptive normalization) ---
+    // DISPLAY points (adaptive normalization)
     const dTheta1 = toAngle(prevPPI, adaptiveMin.current, adaptiveMax.current);
     const dTheta2 = toAngle(currPPI, adaptiveMin.current, adaptiveMax.current);
     displayPoints.current.push({
-      theta1: dTheta1, theta2: dTheta2,
-      kappa: 0, beatIndex: totalBeats.current,
+      theta1: dTheta1, theta2: dTheta2, kappa: 0, beatIndex: totalBeats.current,
     });
     if (displayPoints.current.length > TORUS_WINDOW) displayPoints.current.shift();
 
-    // --- FEATURE points (fixed normalization) ---
+    // FEATURE points (fixed normalization)
     const fTheta1 = toAngle(prevPPI, PPI_MIN, PPI_MAX);
     const fTheta2 = toAngle(currPPI, PPI_MIN, PPI_MAX);
     featurePoints.current.push({
-      theta1: fTheta1, theta2: fTheta2,
-      kappa: 0, beatIndex: totalBeats.current,
+      theta1: fTheta1, theta2: fTheta2, kappa: 0, beatIndex: totalBeats.current,
     });
     if (featurePoints.current.length > TORUS_WINDOW) featurePoints.current.shift();
 
-    // --- Curvature (computed from FEATURE points for dance matching) ---
+    // Curvature (from FEATURE points)
     const fLen = featurePoints.current.length;
     if (fLen >= 3) {
       const fp = featurePoints.current;
@@ -112,13 +136,12 @@ export function useMonitorPipeline() {
       kappaBuffer.current.push(kappa);
       if (kappaBuffer.current.length > KAPPA_WINDOW) kappaBuffer.current.shift();
 
-      // Also set curvature on display point for coloring
       if (displayPoints.current.length >= 2) {
         displayPoints.current[displayPoints.current.length - 2].kappa = kappa;
       }
     }
 
-    // --- Feature computation + dance matching every DANCE_UPDATE_INTERVAL beats ---
+    // Feature computation + dance matching every DANCE_UPDATE_INTERVAL beats
     const shouldUpdate = totalBeats.current % DANCE_UPDATE_INTERVAL === 0;
     const hasEnoughData = kappaBuffer.current.length >= 10;
 
@@ -137,6 +160,18 @@ export function useMonitorPipeline() {
       const match = matchDance(km, g, s);
       match.bpm = currentBpm;
 
+      // Baseline learning: feed features
+      const bs = baselineService.current;
+      if (bs.isLearning()) {
+        bs.addSample(km, g, s, currentBpm);
+      }
+
+      // Change detection: compute if baseline exists
+      const baseline = bs.getBaseline();
+      const changeStatus = changeDetector.current.update(
+        baseline, { kappa: km, gini: g, spread: s },
+      );
+
       setState({
         displayPoints: [...displayPoints.current],
         danceMatch: match,
@@ -146,9 +181,13 @@ export function useMonitorPipeline() {
         spread: s,
         totalBeats: totalBeats.current,
         isDancing: true,
+        changeStatus,
+        changeLevel: changeStatus.level as ChangeLevel,
+        baselineLearningProgress: bs.getLearningProgress(),
+        isLearningBaseline: bs.isLearning(),
+        baselineBeatCount: bs.getSampleCount(),
       });
     } else {
-      // Update display points and BPM between dance matches
       const currentBpm = buf.length >= 2 ? Math.round(60000 / mean(buf)) : null;
       setState(prev => ({
         ...prev,
@@ -169,6 +208,7 @@ export function useMonitorPipeline() {
     beatsSinceAdaptiveUpdate.current = 0;
     adaptiveMin.current = PPI_MIN;
     adaptiveMax.current = PPI_MAX;
+    changeDetector.current.reset();
     setState({
       displayPoints: [],
       danceMatch: null,
@@ -178,8 +218,33 @@ export function useMonitorPipeline() {
       spread: 0,
       totalBeats: 0,
       isDancing: false,
+      changeStatus: DEFAULT_CHANGE_STATUS,
+      changeLevel: 'learning',
+      baselineLearningProgress: baselineService.current.getLearningProgress(),
+      isLearningBaseline: baselineService.current.isLearning(),
+      baselineBeatCount: 0,
     });
   }, []);
 
-  return { state, processPPI, reset };
+  const resetBaseline = useCallback(async () => {
+    await baselineService.current.reset();
+    changeDetector.current.reset();
+    setState(prev => ({
+      ...prev,
+      changeStatus: DEFAULT_CHANGE_STATUS,
+      changeLevel: 'learning',
+      baselineLearningProgress: 0,
+      isLearningBaseline: true,
+      baselineBeatCount: 0,
+    }));
+  }, []);
+
+  /** Force-establish baseline (for testing — skips duration check). */
+  const forceEstablishBaseline = useCallback(() => {
+    return baselineService.current.forceEstablish();
+  }, []);
+
+  const getBaselineService = useCallback(() => baselineService.current, []);
+
+  return { state, processPPI, reset, resetBaseline, forceEstablishBaseline, getBaselineService };
 }

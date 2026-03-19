@@ -24,6 +24,7 @@ import { TorusDisplay } from '../../src/display/TorusDisplay';
 import { DanceCard } from '../../src/display/DanceCard';
 import { ThreeQuestions } from '../../src/display/ThreeQuestions';
 import { MetricsRow } from '../../src/display/MetricsRow';
+import { BaselineIndicator } from '../../src/display/BaselineIndicator';
 import { sessionStore } from './history';
 
 export default function MonitorScreen() {
@@ -111,11 +112,20 @@ export default function MonitorScreen() {
           size={torusSize}
         />
 
+        {/* Baseline indicator */}
+        <BaselineIndicator
+          isLearning={state.isLearningBaseline}
+          progress={state.baselineLearningProgress}
+          sampleCount={state.baselineBeatCount}
+          baselineRecordedAt={!state.isLearningBaseline ? Date.now() : null}
+          baselineBeatCount={!state.isLearningBaseline ? state.baselineBeatCount : null}
+        />
+
         {/* Three questions */}
         <ThreeQuestions
           isDancing={state.isDancing}
           currentDance={state.danceMatch}
-          changeLevel="learning"
+          changeLevel={state.changeLevel}
         />
 
         {/* Metrics row */}
@@ -123,7 +133,7 @@ export default function MonitorScreen() {
           bpm={state.bpm ?? 0}
           kappa={state.kappaMedian}
           gini={state.gini}
-          sigma={null}
+          sigma={state.changeStatus.mahalanobisDistance > 0 ? state.changeStatus.mahalanobisDistance : null}
         />
 
         {/* Session info */}
