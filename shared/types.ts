@@ -37,6 +37,6 @@ export interface PersonalBaseline {
 
 export interface ChangeStatus {
   mahalanobisDistance: number;
-  level: 'normal' | 'notice' | 'alert';
+  level: 'learning' | 'normal' | 'notice' | 'alert';
   sustainedSince: number | null; // Unix ms when level first entered
 }
