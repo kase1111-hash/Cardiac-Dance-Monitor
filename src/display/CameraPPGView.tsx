@@ -26,6 +26,7 @@ import { View, Text, StyleSheet, Platform } from 'react-native';
 import {
   Camera,
   useCameraDevice,
+  useCameraFormat,
   useCameraPermission,
   useFrameProcessor,
 } from 'react-native-vision-camera';
@@ -53,6 +54,10 @@ const CROP_SIZE = 100; // pixels — center crop dimensions
 export function CameraPPGView({ onFrame, active, ppgState, peakCount }: Props) {
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('back');
+  const format = useCameraFormat(device, [
+    { fps: 30 },
+    { videoResolution: { width: 320, height: 240 } },
+  ]);
 
   // Bridge from worklet thread → JS thread
   const handleRedMean = useRunOnJS((redMean: number, timestamp: number) => {
@@ -151,7 +156,8 @@ export function CameraPPGView({ onFrame, active, ppgState, peakCount }: Props) {
         device={device}
         isActive={active}
         torch="on"
-        fps={30}
+        format={format}
+        fps={format ? 30 : undefined}
         pixelFormat="rgb"
         frameProcessor={frameProcessor}
         preview={false}

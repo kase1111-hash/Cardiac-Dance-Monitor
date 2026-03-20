@@ -1,10 +1,12 @@
 /**
- * Tests for Innovo BLE PPG protocol — Nordic UART service.
+ * Tests for Innovo BLE PPG protocol — Nordic UART service with 0xFFF1 characteristic.
  *
  * Covers:
- * - Packet parsing (raw 2-byte PPG, 13-byte status, parseInnovoPacket dispatcher)
+ * - Packet parsing (raw 2-byte PPG, 13-byte status with 0x3E/0xF0 markers)
+ * - parseInnovoPacket dispatcher (length + header/trailer discrimination)
  * - BLE mode detection with Nordic UART UUID
  * - Scan service UUIDs include Nordic UART
+ * - UUID aliases (PPG_SERVICE_UUID, PPG_CHARACTERISTIC_UUID)
  * - BLE PPG handler end-to-end:
  *   - Raw bytes @ 28 Hz → PPGProcessor → PPIs
  *   - Status packets → SpO2/BPM/PI exposure
@@ -19,15 +21,38 @@ import {
   detectBLEMode,
   HEART_RATE_SERVICE_UUID,
   NORDIC_UART_SERVICE_UUID,
+  INNOVO_PPG_CHARACTERISTIC_UUID,
   PPG_SERVICE_UUID,
   PPG_CHARACTERISTIC_UUID,
-  NORDIC_UART_TX_UUID,
   SCAN_SERVICE_UUIDS,
 } from '../ble/ble-service';
 import { BLEPPGHandler, INNOVO_PPG_SAMPLE_RATE } from '../ble/ble-ppg-handler';
 
 // ---------------------------------------------------------------------------
-// parseRawPPGPacket (new)
+// Helper: build a real-format status packet (0x3E header, 0xF0 trailer)
+// ---------------------------------------------------------------------------
+function makeStatusPacket(opts: {
+  spo2?: number;
+  bpm?: number;
+  pi?: number;
+}): Uint8Array {
+  const spo2 = opts.spo2 ?? 98;
+  const bpm = opts.bpm ?? 72;
+  const pi = opts.pi !== undefined ? Math.round(opts.pi * 10) : 35;
+  return new Uint8Array([
+    0x3E,                    // [0] header
+    spo2,                    // [1] SpO2
+    0x00,                    // [2] reserved
+    bpm,                     // [3] BPM
+    0x00,                    // [4] reserved
+    pi,                      // [5] PI × 10
+    0, 0, 0, 0, 0, 0,       // [6-11] reserved
+    0xF0,                    // [12] trailer
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// parseRawPPGPacket
 // ---------------------------------------------------------------------------
 describe('parseRawPPGPacket', () => {
   test('finger present with intensity value', () => {
@@ -52,60 +77,35 @@ describe('parseRawPPGPacket', () => {
 });
 
 // ---------------------------------------------------------------------------
-// parseStatusPacket (new)
+// parseStatusPacket (real 0x3E/0xF0 format)
 // ---------------------------------------------------------------------------
 describe('parseStatusPacket', () => {
-  function makeStatusPacket(opts: {
-    finger?: boolean;
-    searching?: boolean;
-    bpm?: number;
-    spo2?: number;
-    pi?: number;
-  }): Uint8Array {
-    const flags = (opts.finger !== false ? 0x01 : 0x00)
-                | (opts.searching ? 0x02 : 0x00);
-    const bpm = opts.bpm ?? 72;
-    const spo2 = opts.spo2 ?? 98;
-    const pi = opts.pi !== undefined ? Math.round(opts.pi * 10) : 35;
-    return new Uint8Array([
-      0x81,                    // [0] header
-      flags,                   // [1] status flags
-      (bpm >> 8) & 0xFF,      // [2] BPM high
-      bpm & 0xFF,             // [3] BPM low
-      spo2,                   // [4] SpO2
-      pi,                     // [5] PI × 10
-      0, 0, 0, 0, 0, 0, 0,   // [6-12] reserved
-    ]);
-  }
-
   test('parses valid status packet', () => {
-    const data = makeStatusPacket({ bpm: 72, spo2: 98, pi: 3.5 });
+    const data = makeStatusPacket({ spo2: 98, bpm: 72, pi: 3.5 });
     const result = parseStatusPacket(data);
 
     expect(result).not.toBeNull();
     expect(result!.type).toBe('status');
-    expect(result!.fingerPresent).toBe(true);
-    expect(result!.searching).toBe(false);
     expect(result!.bpm).toBe(72);
     expect(result!.spo2).toBe(98);
     expect(result!.perfusionIndex).toBeCloseTo(3.5, 1);
+    expect(result!.fingerPresent).toBe(true);
+    expect(result!.searching).toBe(false);
   });
 
-  test('searching flag', () => {
-    const data = makeStatusPacket({ searching: true, spo2: 127 });
+  test('searching when SpO2 is 127 (invalid)', () => {
+    const data = makeStatusPacket({ spo2: 127, bpm: 0 });
     const result = parseStatusPacket(data);
 
     expect(result!.searching).toBe(true);
-    expect(result!.spo2).toBe(-1); // 127 = invalid
+    expect(result!.spo2).toBe(-1);
   });
 
-  test('finger removed', () => {
-    const data = makeStatusPacket({ finger: false, bpm: 0, spo2: 127 });
+  test('finger not present when bpm=0 and spo2=127', () => {
+    const data = makeStatusPacket({ spo2: 127, bpm: 0 });
     const result = parseStatusPacket(data);
 
     expect(result!.fingerPresent).toBe(false);
-    expect(result!.bpm).toBe(0);
-    expect(result!.spo2).toBe(-1);
   });
 
   test('SpO2 > 100 is invalid', () => {
@@ -115,24 +115,24 @@ describe('parseStatusPacket', () => {
   });
 
   test('SpO2 of 0 is valid (though clinically unlikely)', () => {
-    const data = makeStatusPacket({ spo2: 0 });
+    const data = makeStatusPacket({ spo2: 0, bpm: 60 });
     const result = parseStatusPacket(data);
     expect(result!.spo2).toBe(0);
   });
 
-  test('high BPM (uint16)', () => {
-    const data = makeStatusPacket({ bpm: 300 });
+  test('extracts BPM correctly', () => {
+    const data = makeStatusPacket({ bpm: 120 });
     const result = parseStatusPacket(data);
-    expect(result!.bpm).toBe(300);
+    expect(result!.bpm).toBe(120);
   });
 
   test('returns null for short data', () => {
-    expect(parseStatusPacket(new Uint8Array([0x81, 0x01, 72]))).toBeNull();
+    expect(parseStatusPacket(new Uint8Array([0x3E, 98, 0]))).toBeNull();
   });
 });
 
 // ---------------------------------------------------------------------------
-// parseInnovoPacket (dispatcher)
+// parseInnovoPacket (dispatcher: length + 0x3E/0xF0 markers)
 // ---------------------------------------------------------------------------
 describe('parseInnovoPacket', () => {
   test('2 bytes → raw PPG packet', () => {
@@ -141,11 +141,23 @@ describe('parseInnovoPacket', () => {
     expect(result!.type).toBe('raw');
   });
 
-  test('13 bytes → status packet', () => {
-    const data = new Uint8Array([0x81, 0x01, 0, 72, 98, 35, 0, 0, 0, 0, 0, 0, 0]);
+  test('13 bytes with 0x3E/0xF0 → status packet', () => {
+    const data = makeStatusPacket({ spo2: 98, bpm: 72 });
     const result = parseInnovoPacket(data);
     expect(result).not.toBeNull();
     expect(result!.type).toBe('status');
+  });
+
+  test('13 bytes WITHOUT 0x3E header → null (not a status packet)', () => {
+    const data = new Uint8Array([0x81, 0x01, 0, 72, 98, 35, 0, 0, 0, 0, 0, 0, 0xF0]);
+    const result = parseInnovoPacket(data);
+    expect(result).toBeNull();
+  });
+
+  test('13 bytes WITHOUT 0xF0 trailer → null', () => {
+    const data = new Uint8Array([0x3E, 98, 0, 72, 0, 35, 0, 0, 0, 0, 0, 0, 0x00]);
+    const result = parseInnovoPacket(data);
+    expect(result).toBeNull();
   });
 
   test('1 byte → null', () => {
@@ -258,8 +270,9 @@ describe('UUID aliases', () => {
     expect(PPG_SERVICE_UUID).toBe(NORDIC_UART_SERVICE_UUID);
   });
 
-  test('PPG_CHARACTERISTIC_UUID === NORDIC_UART_TX_UUID', () => {
-    expect(PPG_CHARACTERISTIC_UUID).toBe(NORDIC_UART_TX_UUID);
+  test('PPG_CHARACTERISTIC_UUID === INNOVO_PPG_CHARACTERISTIC_UUID (0xFFF1)', () => {
+    expect(PPG_CHARACTERISTIC_UUID).toBe(INNOVO_PPG_CHARACTERISTIC_UUID);
+    expect(PPG_CHARACTERISTIC_UUID).toBe('0000fff1-0000-1000-8000-00805f9b34fb');
   });
 });
 
@@ -278,7 +291,6 @@ describe('INNOVO_PPG_SAMPLE_RATE', () => {
 describe('BLEPPGHandler', () => {
   test('default sample rate is 28 Hz', () => {
     const handler = new BLEPPGHandler();
-    // No direct way to inspect, but it constructs without error
     expect(handler.getSampleCount()).toBe(0);
   });
 
@@ -288,12 +300,10 @@ describe('BLEPPGHandler', () => {
     handler.onPPI = (ppi) => ppis.push(ppi);
 
     const sampleRate = 28;
-    const freq = 1.0; // 1 Hz = 60 BPM
+    const freq = 1.0;
 
-    // Place finger
     handler.handleNotification(new Uint8Array([0x01, 0x80]), 0);
 
-    // Generate 8 seconds of PPG at 28 Hz
     for (let i = 1; i <= sampleRate * 8; i++) {
       const t = i / sampleRate;
       const phase = (t * freq) % 1;
@@ -392,7 +402,7 @@ describe('BLEPPGHandler', () => {
     handler.onPPI = (ppi) => ppis.push(ppi);
 
     const sampleRate = 50;
-    const freq = 1.2; // 72 BPM
+    const freq = 1.2;
 
     handler.handleNotification(new Uint8Array([0x01, 0x80]), 0);
 
@@ -411,17 +421,14 @@ describe('BLEPPGHandler', () => {
     }
   });
 
-  // --- Status packet handling ---
+  // --- Status packet handling (0x3E/0xF0 format) ---
 
   test('routes 13-byte status packets to onStatus callback', () => {
     const handler = new BLEPPGHandler(28);
     const statuses: any[] = [];
     handler.onStatus = (s) => statuses.push(s);
 
-    const statusPacket = new Uint8Array([
-      0x81, 0x01, 0, 72, 98, 35, 0, 0, 0, 0, 0, 0, 0,
-    ]);
-    handler.handleNotification(statusPacket, 1000);
+    handler.handleNotification(makeStatusPacket({ spo2: 98, bpm: 72, pi: 3.5 }), 1000);
 
     expect(statuses.length).toBe(1);
     expect(statuses[0].bpm).toBe(72);
@@ -432,19 +439,12 @@ describe('BLEPPGHandler', () => {
   test('exposes SpO2 and deviceBPM from latest status', () => {
     const handler = new BLEPPGHandler(28);
 
-    // Initially no data
     expect(handler.spo2).toBe(-1);
     expect(handler.deviceBPM).toBe(0);
     expect(handler.perfusionIndex).toBe(0);
 
-    // Place finger first (raw packet to set finger state)
     handler.handleNotification(new Uint8Array([0x01, 0x80]), 0);
-
-    // Then status packet
-    const statusPacket = new Uint8Array([
-      0x81, 0x01, 0, 75, 97, 42, 0, 0, 0, 0, 0, 0, 0,
-    ]);
-    handler.handleNotification(statusPacket, 1000);
+    handler.handleNotification(makeStatusPacket({ spo2: 97, bpm: 75, pi: 4.2 }), 1000);
 
     expect(handler.spo2).toBe(97);
     expect(handler.deviceBPM).toBe(75);
@@ -461,31 +461,39 @@ describe('BLEPPGHandler', () => {
     const sampleRate = 28;
     const freq = 1.0;
 
-    // Place finger
     handler.handleNotification(new Uint8Array([0x01, 0x80]), 0);
 
-    // 5 seconds of interleaved raw + status packets
     for (let i = 1; i <= sampleRate * 5; i++) {
       const t = i / sampleRate;
       const phase = (t * freq) % 1;
       const intensity = Math.round(128 + 40 * Math.exp(-((phase - 0.3) ** 2) / 0.01));
 
-      // Raw PPG
       handler.handleNotification(new Uint8Array([0x01, intensity]), t * 1000);
 
-      // Status packet once per second
       if (i % sampleRate === 0) {
-        const statusPacket = new Uint8Array([
-          0x81, 0x01, 0, 72, 98, 35, 0, 0, 0, 0, 0, 0, 0,
-        ]);
-        handler.handleNotification(statusPacket, t * 1000 + 1);
+        handler.handleNotification(
+          makeStatusPacket({ spo2: 98, bpm: 72, pi: 3.5 }),
+          t * 1000 + 1,
+        );
       }
     }
 
-    // Should have PPIs from raw stream AND status packets
     expect(ppis.length).toBeGreaterThan(0);
     expect(statuses.length).toBe(5);
     expect(handler.spo2).toBe(98);
+  });
+
+  test('13-byte packet without 0x3E/0xF0 markers is ignored by handler', () => {
+    const handler = new BLEPPGHandler(28);
+    const statuses: any[] = [];
+    handler.onStatus = (s) => statuses.push(s);
+
+    // Old-format packet (0x81 header) — parseInnovoPacket returns null,
+    // falls through to legacy 2-byte parse which also returns null (too long for raw, no markers for status)
+    const badPacket = new Uint8Array([0x81, 0x01, 0, 72, 98, 35, 0, 0, 0, 0, 0, 0, 0]);
+    handler.handleNotification(badPacket, 1000);
+
+    expect(statuses.length).toBe(0);
   });
 
   // --- Zero-run detection ---
@@ -495,43 +503,35 @@ describe('BLEPPGHandler', () => {
     const ppis: number[] = [];
     handler.onPPI = (ppi) => ppis.push(ppi);
 
-    // Place finger and send some valid data
     handler.handleNotification(new Uint8Array([0x01, 0x80]), 0);
     for (let i = 1; i <= 28; i++) {
       handler.handleNotification(new Uint8Array([0x01, 128]), i * 36);
     }
     const countBeforeZeros = handler.getSampleCount();
 
-    // Send 10 consecutive zeros — should stop processing after 5th
     for (let i = 0; i < 10; i++) {
       handler.handleNotification(new Uint8Array([0x01, 0]), (29 + i) * 36);
     }
 
     expect(handler.signalDropout).toBe(true);
-    // Sample count should have increased by at most 4 (first 4 zeros processed,
-    // 5th triggers dropout, 6-10 not processed)
     expect(handler.getSampleCount()).toBeLessThanOrEqual(countBeforeZeros + 5);
   });
 
   test('resets processor and resumes on signal return after zero-run', () => {
     const handler = new BLEPPGHandler(28);
 
-    // Place finger
     handler.handleNotification(new Uint8Array([0x01, 0x80]), 0);
     for (let i = 1; i <= 28; i++) {
       handler.handleNotification(new Uint8Array([0x01, 128]), i * 36);
     }
 
-    // Zero-run
     for (let i = 0; i < 10; i++) {
       handler.handleNotification(new Uint8Array([0x01, 0]), (29 + i) * 36);
     }
     expect(handler.signalDropout).toBe(true);
 
-    // Signal returns — processor should reset for clean start
     handler.handleNotification(new Uint8Array([0x01, 128]), 2000);
     expect(handler.signalDropout).toBe(false);
-    // Peak count should be 0 after reset
     expect(handler.getConsecutivePeakCount()).toBe(0);
   });
 
@@ -540,7 +540,6 @@ describe('BLEPPGHandler', () => {
 
     handler.handleNotification(new Uint8Array([0x01, 0x80]), 0);
 
-    // 4 zeros — under threshold
     for (let i = 1; i <= 4; i++) {
       handler.handleNotification(new Uint8Array([0x01, 0]), i * 36);
     }
@@ -553,7 +552,6 @@ describe('BLEPPGHandler', () => {
 
     handler.handleNotification(new Uint8Array([0x01, 0x80]), 0);
 
-    // 3 zeros, then a valid sample, then 3 more zeros
     for (let i = 1; i <= 3; i++) {
       handler.handleNotification(new Uint8Array([0x01, 0]), i * 36);
     }

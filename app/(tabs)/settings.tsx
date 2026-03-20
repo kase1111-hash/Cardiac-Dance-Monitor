@@ -73,6 +73,14 @@ export default function SettingsScreen() {
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
+            style={[styles.toggleBtn, sourceType === 'ble_innovo' && styles.toggleActive]}
+            onPress={() => setSourceType('ble_innovo')}
+          >
+            <Text style={[styles.toggleText, sourceType === 'ble_innovo' && styles.toggleTextActive]}>
+              Innovo
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
             style={[styles.toggleBtn, sourceType === 'camera' && styles.toggleActive]}
             onPress={() => setSourceType('camera')}
           >
@@ -87,6 +95,16 @@ export default function SettingsScreen() {
             <Text style={styles.infoText}>
               Connect a Bluetooth pulse sensor that supports Heart Rate Service (0x180D).
               The app will automatically scan for nearby devices.
+            </Text>
+          </View>
+        )}
+
+        {sourceType === 'ble_innovo' && (
+          <View style={styles.infoBox}>
+            <Text style={styles.infoText}>
+              Scanning for Innovo iP900BPB pulse oximeter via Bluetooth.
+              Turn on the device and place your finger in the sensor.
+              Provides raw PPG waveform + SpO2 + BPM.
             </Text>
           </View>
         )}

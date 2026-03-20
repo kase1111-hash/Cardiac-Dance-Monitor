@@ -22,9 +22,16 @@ export const NORDIC_UART_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 export const NORDIC_UART_TX_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // notify
 export const NORDIC_UART_RX_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // write
 
+// --- Innovo PPG characteristic (advertised under Nordic UART service) ---
+// The actual data characteristic is 0xFFF1, not the Nordic UART TX UUID.
+export const INNOVO_PPG_CHARACTERISTIC_UUID = '0000fff1-0000-1000-8000-00805f9b34fb';
+
+// Innovo device name prefix for scan filtering
+export const INNOVO_DEVICE_NAME = 'iP900BPB';
+
 // Legacy aliases — kept for backward compatibility with any code referencing old names
 export const PPG_SERVICE_UUID = NORDIC_UART_SERVICE_UUID;
-export const PPG_CHARACTERISTIC_UUID = NORDIC_UART_TX_UUID;
+export const PPG_CHARACTERISTIC_UUID = INNOVO_PPG_CHARACTERISTIC_UUID;
 
 /** Short-form UUIDs for scan filtering */
 export const SCAN_SERVICE_UUIDS = [
@@ -140,14 +147,15 @@ export interface RawPPGPacket {
  * Status packet — 13 bytes, received ~1/second.
  * Contains device-computed vitals: SpO2, BPM, perfusion index.
  *
- * Byte layout (from protocol analysis):
- *   [0]    0x81  header/sync byte
- *   [1]    status flags (bit 0: finger present, bit 1: searching)
- *   [2]    BPM high bits (typically 0 for normal HR)
- *   [3]    BPM low byte
- *   [4]    SpO2 percentage (0-100, or 127 = invalid/searching)
+ * Byte layout (from real device captures):
+ *   [0]    0x3E  header/sync byte
+ *   [1]    SpO2 percentage (0-100, or 127 = invalid/searching)
+ *   [2]    reserved
+ *   [3]    BPM (heart rate)
+ *   [4]    reserved
  *   [5]    Perfusion Index × 10 (e.g. 35 = PI 3.5%)
- *   [6-12] Reserved / waveform metadata (ignored)
+ *   [6-11] Reserved / waveform metadata (ignored)
+ *   [12]   0xF0  trailer/sync byte
  */
 export interface StatusPacket {
   type: 'status';
@@ -162,16 +170,16 @@ export interface StatusPacket {
 export type InnovoPacket = RawPPGPacket | StatusPacket;
 
 /**
- * Parse a Nordic UART TX notification from an Innovo-style device.
- * Discriminates packet type by length:
- * - 2 bytes → raw PPG sample (28 Hz)
- * - 13 bytes → status/vitals (1 Hz)
+ * Parse an Innovo PPG notification from characteristic 0xFFF1.
+ * Discriminates packet type by length and header/trailer bytes:
+ * - 2 bytes starting with 0x01 → raw PPG sample (28 Hz)
+ * - 13 bytes starting with 0x3E and ending with 0xF0 → status/vitals (1 Hz)
  */
 export function parseInnovoPacket(data: Uint8Array): InnovoPacket | null {
   if (data.length === 2) {
     return parseRawPPGPacket(data);
   }
-  if (data.length >= 13) {
+  if (data.length >= 13 && data[0] === 0x3E && data[12] === 0xF0) {
     return parseStatusPacket(data);
   }
   return null;
@@ -191,26 +199,26 @@ export function parseRawPPGPacket(data: Uint8Array): RawPPGPacket | null {
 }
 
 /**
- * Parse a 13-byte status packet.
+ * Parse a 13-byte status packet (0x3E header, 0xF0 trailer).
+ *
+ * Real byte layout from device captures:
+ *   [0]=0x3E  [1]=SpO2  [2]=reserved  [3]=BPM  [4]=reserved
+ *   [5]=PI×10  [6-11]=reserved  [12]=0xF0
  */
 export function parseStatusPacket(data: Uint8Array): StatusPacket | null {
   if (data.length < 13) {
     return null;
   }
 
-  const statusFlags = data[1];
-  const fingerPresent = (statusFlags & 0x01) !== 0;
-  const searching = (statusFlags & 0x02) !== 0;
-
-  const bpmHigh = data[2];
-  const bpmLow = data[3];
-  const bpm = (bpmHigh << 8) | bpmLow;
-
-  const spo2Raw = data[4];
-  // 127 (0x7F) means invalid / still searching
-  const spo2 = spo2Raw === 127 || spo2Raw > 100 ? -1 : spo2Raw;
-
+  const spo2Raw = data[1];
+  const bpm = data[3];
   const piRaw = data[5];
+
+  // 127 (0x7F) or >100 means invalid / still searching
+  const spo2 = spo2Raw === 127 || spo2Raw > 100 ? -1 : spo2Raw;
+  const searching = spo2 === -1;
+  // Finger present if we're getting valid-ish readings
+  const fingerPresent = bpm > 0 || (spo2Raw > 0 && spo2Raw !== 127);
   const perfusionIndex = piRaw / 10;
 
   return {

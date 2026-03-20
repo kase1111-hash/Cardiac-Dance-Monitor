@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { useSimulatedPulseOx } from '../../src/hooks/use-simulated-pulse-ox';
 import { useCameraPPG } from '../../src/hooks/use-camera-ppg';
-import { useInnovoPulseOx } from '../../src/hooks/use-innovo-pulse-ox';
+import { useInnovoPulseOx } from '../../src/ble/use-innovo-pulse-ox';
 import { useMonitorPipeline } from '../../src/hooks/use-monitor-pipeline';
 import { useSessionRecorder } from '../../src/hooks/use-session-recorder';
 import { useDataSource } from '../../src/context/data-source-context';
@@ -41,7 +41,7 @@ export default function MonitorScreen() {
 
   // Select active source based on sourceType
   const pulseOx = sourceType === 'camera' ? camera
-    : sourceType === 'ble' ? ble
+    : sourceType === 'ble_innovo' ? ble
     : simulated;
 
   // Auto-connect/disconnect camera and BLE when source changes
@@ -51,7 +51,7 @@ export default function MonitorScreen() {
     } else {
       camera.disconnect();
     }
-    if (sourceType === 'ble') {
+    if (sourceType === 'ble_innovo') {
       ble.connect();
     } else {
       ble.disconnect();
@@ -156,9 +156,9 @@ export default function MonitorScreen() {
         {/* BPM display */}
         <BPMDisplay bpm={state.bpm} sourceName={pulseOx.sourceName} />
 
-        {/* SpO2 display (BLE source only — free data from status packets) */}
-        {sourceType === 'ble' && (
-          <SpO2Display spo2={ble.spo2} perfusionIndex={ble.perfusionIndex} />
+        {/* SpO2 display (Innovo BLE source — free data from status packets) */}
+        {sourceType === 'ble_innovo' && ble.spo2 !== null && (
+          <SpO2Display spo2={ble.spo2} perfusionIndex={ble.perfusionIndex ?? undefined} />
         )}
 
         {/* Dance card */}
