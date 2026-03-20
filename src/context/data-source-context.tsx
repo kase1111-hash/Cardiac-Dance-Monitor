@@ -5,7 +5,7 @@
 import React, { createContext, useContext, useState, type ReactNode } from 'react';
 import type { RhythmScenario } from '../../shared/simulator';
 
-type DataSourceType = 'simulated' | 'ble';
+type DataSourceType = 'simulated' | 'ble' | 'camera';
 
 interface DataSourceContextValue {
   sourceType: DataSourceType;

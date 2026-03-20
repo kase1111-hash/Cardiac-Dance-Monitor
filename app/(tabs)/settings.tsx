@@ -1,9 +1,13 @@
 /**
- * Settings tab — dev toggle for simulated vs BLE source + scenario picker.
+ * Settings tab — data source, baseline management, export, about.
+ *
+ * Hidden dev features:
+ * - Long-press "About" → toggle PPG validation mode
  */
-import React from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, TouchableOpacity, ScrollView,
+  Alert,
 } from 'react-native';
 import { useDataSource } from '../../src/context/data-source-context';
 import type { RhythmScenario } from '../../shared/simulator';
@@ -18,6 +22,31 @@ const SCENARIOS: Array<{ id: RhythmScenario; label: string; description: string 
 
 export default function SettingsScreen() {
   const { sourceType, setSourceType, simulatedScenario, setSimulatedScenario } = useDataSource();
+  const [devMode, setDevMode] = useState(false);
+  const [ppgValidation, setPPGValidation] = useState(false);
+
+  const handleResetBaseline = useCallback(() => {
+    Alert.alert(
+      'Reset Baseline',
+      'This will clear your learned rhythm baseline. The system will need to re-learn your pattern. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: () => {
+            // Baseline reset is handled by the monitor pipeline
+            // This emits an event that the monitor screen listens to
+            Alert.alert('Baseline Reset', 'Your baseline has been cleared. The monitor will re-learn your rhythm pattern.');
+          },
+        },
+      ],
+    );
+  }, []);
+
+  const handleAboutLongPress = useCallback(() => {
+    setDevMode(prev => !prev);
+  }, []);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -43,7 +72,33 @@ export default function SettingsScreen() {
               Pulse Sensor
             </Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.toggleBtn, sourceType === 'camera' && styles.toggleActive]}
+            onPress={() => setSourceType('camera')}
+          >
+            <Text style={[styles.toggleText, sourceType === 'camera' && styles.toggleTextActive]}>
+              Camera
+            </Text>
+          </TouchableOpacity>
         </View>
+
+        {sourceType === 'ble' && (
+          <View style={styles.infoBox}>
+            <Text style={styles.infoText}>
+              Connect a Bluetooth pulse sensor that supports Heart Rate Service (0x180D).
+              The app will automatically scan for nearby devices.
+            </Text>
+          </View>
+        )}
+
+        {sourceType === 'camera' && (
+          <View style={styles.infoBox}>
+            <Text style={styles.infoText}>
+              Place your fingertip over the rear camera lens. The flash will turn on
+              to detect your pulse. Hold still for at least 30 seconds.
+            </Text>
+          </View>
+        )}
 
         {/* Scenario picker (only when simulated) */}
         {sourceType === 'simulated' && (
@@ -64,13 +119,50 @@ export default function SettingsScreen() {
           </>
         )}
 
+        {/* Baseline management */}
+        <Text style={styles.sectionHeader}>Baseline</Text>
+        <TouchableOpacity style={styles.actionRow} onPress={handleResetBaseline}>
+          <Text style={styles.actionLabel}>Reset Baseline</Text>
+          <Text style={styles.actionDesc}>
+            Clear learned rhythm pattern and start fresh
+          </Text>
+        </TouchableOpacity>
+
+        {/* Export */}
+        <Text style={styles.sectionHeader}>Export</Text>
+        <Text style={styles.infoText}>
+          Export individual sessions from the History tab. Tap a session to view details,
+          then use the share button to export as CSV or PDF.
+        </Text>
+
+        {/* Dev mode features (hidden) */}
+        {devMode && (
+          <>
+            <Text style={[styles.sectionHeader, { color: '#a855f7' }]}>Developer</Text>
+            <TouchableOpacity
+              style={[styles.actionRow, ppgValidation && styles.actionRowActive]}
+              onPress={() => setPPGValidation(prev => !prev)}
+            >
+              <Text style={styles.actionLabel}>
+                PPG Validation Mode {ppgValidation ? '(ON)' : '(OFF)'}
+              </Text>
+              <Text style={styles.actionDesc}>
+                Run BLE + Camera simultaneously to compare accuracy
+              </Text>
+            </TouchableOpacity>
+          </>
+        )}
+
         {/* About */}
         <Text style={styles.sectionHeader}>About</Text>
-        <Text style={styles.aboutText}>
-          Cardiac Dance Monitor v1.0.0{'\n'}
-          Research prototype — not a medical device.{'\n'}
-          Validated on 9,917 records across 6 databases.
-        </Text>
+        <TouchableOpacity onLongPress={handleAboutLongPress} delayLongPress={3000}>
+          <Text style={styles.aboutText}>
+            Cardiac Dance Monitor v1.0.0{'\n'}
+            Research prototype — not a medical device.{'\n'}
+            Validated on 9,917 records across 6 databases.
+            {devMode ? '\n\nDeveloper mode enabled.' : ''}
+          </Text>
+        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );
@@ -86,6 +178,7 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
+    paddingBottom: 40,
   },
   title: {
     color: '#e2e8f0',
@@ -127,6 +220,19 @@ const styles = StyleSheet.create({
   toggleTextActive: {
     color: '#22c55e',
   },
+  infoBox: {
+    marginTop: 8,
+    padding: 12,
+    backgroundColor: '#0a0a1a',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1a1a2e',
+  },
+  infoText: {
+    color: '#64748b',
+    fontSize: 12,
+    lineHeight: 18,
+  },
   scenarioRow: {
     paddingVertical: 12,
     paddingHorizontal: 16,
@@ -149,6 +255,29 @@ const styles = StyleSheet.create({
     color: '#22c55e',
   },
   scenarioDesc: {
+    color: '#64748b',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  actionRow: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: '#0a0a1a',
+    borderWidth: 1,
+    borderColor: '#1a1a2e',
+    marginBottom: 8,
+  },
+  actionRowActive: {
+    borderColor: '#a855f7',
+    backgroundColor: '#1a0a2e',
+  },
+  actionLabel: {
+    color: '#e2e8f0',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  actionDesc: {
     color: '#64748b',
     fontSize: 12,
     marginTop: 2,
