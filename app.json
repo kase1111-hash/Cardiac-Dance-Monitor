@@ -28,7 +28,20 @@
         {
           "cameraPermission": "Camera is used to detect your pulse via fingertip PPG"
         }
-      ]
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "kotlinVersion": "1.9.25",
+            "composeCompilerVersion": "1.5.14",
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 34,
+            "minSdkVersion": 24
+          }
+        }
+      ],
+      "./plugins/withKotlinFix"
     ]
   }
 }
