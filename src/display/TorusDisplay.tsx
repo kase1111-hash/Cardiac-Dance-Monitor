@@ -9,11 +9,13 @@
  * - Diagonal reference line (identity: RR_n = RR_{n+1})
  * - Points sized/opacified by recency
  * - Polyline connecting consecutive points
- * - Latest point: white pulsing ring
+ * - Latest point: large white ring + bright inner dot
+ * - Trail: last 5 points highlighted with gradient fade
+ * - Beat counter overlay so user can see live updates
  * - Axis labels
  */
-import React, { useEffect, useRef } from 'react';
-import { Animated, View, StyleSheet } from 'react-native';
+import React from 'react';
+import { View, Text, StyleSheet } from 'react-native';
 import Svg, {
   Rect, Line, Circle, Polyline, Text as SvgText,
 } from 'react-native-svg';
@@ -21,6 +23,7 @@ import type { TorusPoint } from '../../shared/types';
 import { getDanceColor } from '../../shared/dance-colors';
 
 const TWO_PI = 2 * Math.PI;
+const TRAIL_LENGTH = 5;
 
 interface Props {
   points: TorusPoint[];
@@ -39,27 +42,6 @@ export function TorusDisplay({ points, danceName, size }: Props) {
   const padding = 24;
   const inner = size - 2 * padding;
 
-  // Pulsing animation for latest point
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 1.6,
-          duration: 600,
-          useNativeDriver: false,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 600,
-          useNativeDriver: false,
-        }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [pulseAnim]);
-
   // Grid positions at 25%, 50%, 75%
   const gridFractions = [0.25, 0.5, 0.75];
   const gridPositions = gridFractions.map(f => padding + f * inner);
@@ -72,6 +54,25 @@ export function TorusDisplay({ points, danceName, size }: Props) {
       return `${x},${y}`;
     })
     .join(' ');
+
+  // Trail: highlight the last TRAIL_LENGTH points with brighter connecting lines
+  const trailStart = Math.max(0, points.length - TRAIL_LENGTH);
+  const trailPoints = points.slice(trailStart);
+  const trailStr = trailPoints
+    .map(p => {
+      const x = angleToPixel(p.theta1, size, padding);
+      const y = angleToPixel(p.theta2, size, padding);
+      return `${x},${y}`;
+    })
+    .join(' ');
+
+  // Latest point info
+  const latest = points.length > 0 ? points[points.length - 1] : null;
+  const latestX = latest ? angleToPixel(latest.theta1, size, padding) : 0;
+  const latestY = latest ? angleToPixel(latest.theta2, size, padding) : 0;
+
+  // Beat count from latest point's beatIndex
+  const beatCount = latest?.beatIndex ?? 0;
 
   return (
     <View style={[styles.container, { width: size, height: size }]}>
@@ -107,42 +108,87 @@ export function TorusDisplay({ points, danceName, size }: Props) {
           stroke="#1a1a2e" strokeWidth={1} strokeDasharray="4,4"
         />
 
-        {/* Polyline connecting consecutive points */}
+        {/* Polyline connecting all points (dim) */}
         {points.length >= 2 && (
           <Polyline
             points={polylineStr}
             fill="none"
             stroke={color}
             strokeWidth={1}
-            strokeOpacity={0.2}
+            strokeOpacity={0.15}
           />
         )}
 
-        {/* Points — sized and opacified by recency */}
-        {points.map((p, i) => {
+        {/* Trail polyline — bright line for last N points */}
+        {trailPoints.length >= 2 && (
+          <Polyline
+            points={trailStr}
+            fill="none"
+            stroke="#ffffff"
+            strokeWidth={2}
+            strokeOpacity={0.5}
+          />
+        )}
+
+        {/* Older points — small and faded */}
+        {points.slice(0, trailStart).map((p, i) => {
           const x = angleToPixel(p.theta1, size, padding);
           const y = angleToPixel(p.theta2, size, padding);
-          const recency = points.length > 1 ? i / (points.length - 1) : 1;
-          const radius = 2 + recency * 4; // 2px oldest → 6px newest
-          const opacity = 0.2 + recency * 0.8; // 0.2 → 1.0
-          const isLatest = i === points.length - 1;
+          const recency = points.length > 1 ? i / (points.length - 1) : 0;
+          const radius = 1.5 + recency * 2;
+          const opacity = 0.1 + recency * 0.3;
 
           return (
-            <React.Fragment key={`pt-${p.beatIndex}`}>
+            <Circle
+              key={`pt-${p.beatIndex}`}
+              cx={x} cy={y} r={radius}
+              fill={color}
+              fillOpacity={opacity}
+            />
+          );
+        })}
+
+        {/* Trail points — gradient from dim to bright */}
+        {trailPoints.map((p, i) => {
+          const x = angleToPixel(p.theta1, size, padding);
+          const y = angleToPixel(p.theta2, size, padding);
+          const isLatest = i === trailPoints.length - 1;
+          // Trail fade: 0.4 → 0.7 → 1.0 across trail
+          const trailFrac = trailPoints.length > 1 ? i / (trailPoints.length - 1) : 1;
+          const radius = isLatest ? 7 : 3 + trailFrac * 3;
+          const opacity = isLatest ? 1.0 : 0.4 + trailFrac * 0.4;
+
+          return (
+            <React.Fragment key={`trail-${p.beatIndex}`}>
+              {/* Glow behind trail points */}
+              <Circle
+                cx={x} cy={y} r={radius + 3}
+                fill={isLatest ? '#ffffff' : color}
+                fillOpacity={isLatest ? 0.15 : opacity * 0.2}
+              />
+              {/* Trail dot */}
               <Circle
                 cx={x} cy={y} r={radius}
-                fill={color}
+                fill={isLatest ? '#ffffff' : color}
                 fillOpacity={opacity}
               />
-              {/* White pulsing ring on latest point */}
+              {/* Latest point: outer ring */}
               {isLatest && (
-                <Circle
-                  cx={x} cy={y} r={8}
-                  fill="none"
-                  stroke="#ffffff"
-                  strokeWidth={1.5}
-                  strokeOpacity={0.8}
-                />
+                <>
+                  <Circle
+                    cx={x} cy={y} r={12}
+                    fill="none"
+                    stroke="#ffffff"
+                    strokeWidth={2}
+                    strokeOpacity={0.9}
+                  />
+                  {/* Inner colored dot */}
+                  <Circle
+                    cx={x} cy={y} r={4}
+                    fill={color}
+                    fillOpacity={1}
+                  />
+                </>
               )}
             </React.Fragment>
           );
@@ -164,6 +210,15 @@ export function TorusDisplay({ points, danceName, size }: Props) {
           originX={8} originY={size / 2}
         >
           {'RR(n+1) \u2192'}
+        </SvgText>
+
+        {/* Beat counter — top-right corner */}
+        <SvgText
+          x={size - padding - 4} y={padding + 14}
+          fill="#475569" fontSize={11}
+          textAnchor="end" fontFamily="monospace"
+        >
+          {`#${beatCount}`}
         </SvgText>
       </Svg>
     </View>

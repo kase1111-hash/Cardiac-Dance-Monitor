@@ -24,6 +24,8 @@ export class BaselineService {
   private bpmValues: number[] = [];
   private learningStartTime: number | null = null;
   private totalSamples = 0;
+  /** Raw beat count — tracks actual PPIs received, not feature windows. */
+  private rawBeats = 0;
 
   // Established baseline (frozen once set)
   private baseline: PersonalBaseline | null = null;
@@ -58,15 +60,24 @@ export class BaselineService {
     return !this.frozen;
   }
 
-  /** Learning progress as a fraction 0-1. */
+  /** Learning progress as a fraction 0-1 (based on raw beats). */
   getLearningProgress(): number {
     if (this.frozen) return 1;
-    return Math.min(1, this.totalSamples / BASELINE_MIN_BEATS);
+    return Math.min(1, this.rawBeats / BASELINE_MIN_BEATS);
   }
 
-  /** Total feature samples accumulated during learning. */
+  /** Raw beat count accumulated during learning. */
   getSampleCount(): number {
-    return this.totalSamples;
+    return this.rawBeats;
+  }
+
+  /** Record a raw beat (call every PPI, not just every feature window). */
+  countBeat(): void {
+    if (this.frozen) return;
+    if (this.learningStartTime === null) {
+      this.learningStartTime = Date.now();
+    }
+    this.rawBeats++;
   }
 
   /**
@@ -77,20 +88,16 @@ export class BaselineService {
   addSample(kappa: number, gini: number, spread: number, bpm: number): boolean {
     if (this.frozen) return false;
 
-    if (this.learningStartTime === null) {
-      this.learningStartTime = Date.now();
-    }
-
     this.kappaValues.push(kappa);
     this.giniValues.push(gini);
     this.spreadValues.push(spread);
     this.bpmValues.push(bpm);
     this.totalSamples++;
 
-    // Check if we've met the threshold
-    const elapsedMs = Date.now() - this.learningStartTime;
+    // Check if we've met the threshold (using raw beat count, not feature samples)
+    const elapsedMs = this.learningStartTime ? Date.now() - this.learningStartTime : 0;
     const elapsedSeconds = elapsedMs / 1000;
-    const meetsBeats = this.totalSamples >= BASELINE_MIN_BEATS;
+    const meetsBeats = this.rawBeats >= BASELINE_MIN_BEATS;
     const meetsDuration = elapsedSeconds >= BASELINE_DURATION;
 
     if (meetsBeats && meetsDuration) {
@@ -112,7 +119,7 @@ export class BaselineService {
       spreadSd: std(this.spreadValues),
       bpmMean: Math.round(mean(this.bpmValues)),
       recordedAt: Date.now(),
-      beatCount: this.totalSamples,
+      beatCount: this.rawBeats,
     };
     this.frozen = true;
   }
@@ -134,6 +141,7 @@ export class BaselineService {
     this.bpmValues = [];
     this.learningStartTime = null;
     this.totalSamples = 0;
+    this.rawBeats = 0;
     await this.storage.setItem(BASELINE_KEY, '');
   }
 
@@ -142,7 +150,7 @@ export class BaselineService {
    * Requires at least BASELINE_MIN_BEATS samples.
    */
   forceEstablish(): boolean {
-    if (this.totalSamples < BASELINE_MIN_BEATS) return false;
+    if (this.rawBeats < BASELINE_MIN_BEATS && this.totalSamples < 2) return false;
     this.establish();
     return true;
   }

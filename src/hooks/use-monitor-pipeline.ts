@@ -142,6 +142,10 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
       }
     }
 
+    // Count every raw beat for baseline learning
+    const bs = baselineService.current;
+    bs.countBeat();
+
     // BPM + torus display update on EVERY beat
     const currentBpm = buf.length >= 2 ? Math.round(60000 / mean(buf)) : null;
     let perBeatUpdate: Partial<PipelineState> = {
@@ -149,6 +153,9 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
       bpm: currentBpm,
       totalBeats: totalBeats.current,
       isDancing: totalBeats.current >= 10,
+      baselineLearningProgress: bs.getLearningProgress(),
+      isLearningBaseline: bs.isLearning(),
+      baselineBeatCount: bs.getSampleCount(),
     };
 
     // Dance identification + features every DANCE_UPDATE_INTERVAL beats
