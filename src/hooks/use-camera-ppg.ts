@@ -46,11 +46,11 @@ export function useCameraPPG(): CameraPPGResult {
   // Set up PPI callback
   const setupProcessor = useCallback(() => {
     processor.current.onPPI = (ppi: number) => {
-      const result = qualityGate.current.check(ppi);
-      if (result.valid) {
+      const valid = qualityGate.current.check(ppi);
+      if (valid) {
         setLatestPPI(ppi);
       }
-      setSignalQuality(qualityGate.current.getQuality());
+      setSignalQuality(qualityGate.current.getQualityLevel());
     };
   }, []);
 

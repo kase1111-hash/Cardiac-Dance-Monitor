@@ -1,15 +1,35 @@
 /**
- * Camera PPG view — captures frames from rear camera with flash ON,
- * extracts red channel mean, feeds into PPG processor.
+ * Camera PPG view — captures frames from rear camera with flash/torch ON,
+ * extracts mean red channel intensity via VisionCamera frame processor,
+ * feeds into PPG processor.
  *
  * Per SPEC Section 1.4:
- * - Rear camera at 30 fps, flash ON
+ * - Rear camera at 30 fps, torch ON
  * - Red channel extraction (mean intensity per frame)
  * - User places fingertip over lens
+ *
+ * The frame processor runs on the worklet thread and samples a sparse grid
+ * of pixels from the center of the frame. Since the finger covers the entire
+ * lens, the whole frame is a uniform red glow — we just need its average
+ * brightness as a single number. That's the PPG signal.
+ *
+ * Pixel format: We request 'rgb' (RGBA/BGRA 8-bit, 4 bytes per pixel).
+ * On iOS the layout is BGRA, on Android it may be RGBA. Either way, we
+ * take a weighted luminance from the R channel (byte offset 0 or 2) — but
+ * since the finger-on-lens image is nearly monochromatic red, the specific
+ * channel matters less than tracking the brightness variation over time.
+ * We sample R at offset 0 on Android (RGBA) and offset 2 on iOS (BGRA),
+ * but for robustness we just take max(byte0, byte2) which covers both.
  */
-import React, { useRef, useCallback, useEffect, useState } from 'react';
+import React, { useCallback } from 'react';
 import { View, Text, StyleSheet, Platform } from 'react-native';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import {
+  Camera,
+  useCameraDevice,
+  useCameraPermission,
+  useFrameProcessor,
+} from 'react-native-vision-camera';
+import { useRunOnJS } from 'react-native-worklets-core';
 
 interface Props {
   /** Called with mean red channel intensity and timestamp for each frame. */
@@ -22,66 +42,94 @@ interface Props {
   peakCount: number;
 }
 
+/**
+ * Number of pixels to sample per axis in the center crop.
+ * Total samples = GRID_SIZE^2. 10x10 = 100 samples is plenty for a
+ * uniform finger-on-lens image and runs well within 30fps budget.
+ */
+const GRID_SIZE = 10;
+const CROP_SIZE = 100; // pixels — center crop dimensions
+
 export function CameraPPGView({ onFrame, active, ppgState, peakCount }: Props) {
-  const [permission, requestPermission] = useCameraPermissions();
-  const frameCount = useRef(0);
+  const { hasPermission, requestPermission } = useCameraPermission();
+  const device = useCameraDevice('back');
 
-  useEffect(() => {
-    if (!permission?.granted) {
-      requestPermission();
+  // Bridge from worklet thread → JS thread
+  const handleRedMean = useRunOnJS((redMean: number, timestamp: number) => {
+    onFrame(redMean, timestamp);
+  }, [onFrame]);
+
+  const frameProcessor = useFrameProcessor((frame) => {
+    'worklet';
+
+    const width = frame.width;
+    const height = frame.height;
+
+    // Compute center crop bounds
+    const cropW = Math.min(CROP_SIZE, width);
+    const cropH = Math.min(CROP_SIZE, height);
+    const startX = Math.floor((width - cropW) / 2);
+    const startY = Math.floor((height - cropH) / 2);
+
+    // Step size: sample GRID_SIZE points across each axis
+    const stepX = Math.max(1, Math.floor(cropW / GRID_SIZE));
+    const stepY = Math.max(1, Math.floor(cropH / GRID_SIZE));
+
+    // Copy pixel data from GPU → CPU
+    const buffer = frame.toArrayBuffer();
+    const data = new Uint8Array(buffer);
+    const bytesPerRow = frame.bytesPerRow;
+
+    // RGB pixel format: 4 bytes per pixel (RGBA or BGRA)
+    const bytesPerPixel = 4;
+
+    let sum = 0;
+    let count = 0;
+
+    for (let dy = 0; dy < GRID_SIZE; dy++) {
+      const y = startY + dy * stepY;
+      const rowOffset = y * bytesPerRow;
+
+      for (let dx = 0; dx < GRID_SIZE; dx++) {
+        const x = startX + dx * stepX;
+        const pixelOffset = rowOffset + x * bytesPerPixel;
+
+        // Take max of byte 0 and byte 2 to handle both RGBA and BGRA layouts.
+        // For finger-on-lens PPG, the red channel dominates in both layouts.
+        const byte0 = data[pixelOffset];     // R in RGBA, B in BGRA
+        const byte2 = data[pixelOffset + 2]; // B in RGBA, R in BGRA
+        const red = byte0 > byte2 ? byte0 : byte2;
+
+        sum += red;
+        count++;
+      }
     }
-  }, [permission, requestPermission]);
 
-  /**
-   * Process a camera frame. In Expo Camera, we use onCameraReady
-   * and a periodic timer since direct frame access is limited.
-   *
-   * For real PPG, this would use the camera's frame processor or
-   * a native module. Here we simulate red channel extraction from
-   * the camera preview's average luminance.
-   *
-   * On a real device with fingertip on lens + flash, the entire
-   * preview is a uniform red glow that pulses with blood flow.
-   */
-  const handleFrame = useCallback(() => {
-    if (!active) return;
-    frameCount.current += 1;
+    const redMean = count > 0 ? sum / count : 0;
+    const timestamp = frame.timestamp / 1000000; // nanoseconds → milliseconds
 
-    // In production: extract mean red channel from frame buffer.
-    // expo-camera doesn't expose raw frame data directly in JS,
-    // so a native module or expo-gl bridge is needed for real extraction.
-    // This provides the integration point — the PPG processor + filter
-    // are fully functional when fed real red channel values.
-    //
-    // For demonstration, we signal that frames are being captured.
-    const timestamp = Date.now();
-    // Real implementation would extract redMean from pixel data here
-    onFrame(0, timestamp);
-  }, [active, onFrame]);
+    handleRedMean(redMean, timestamp);
+  }, [handleRedMean]);
 
-  // Periodic frame capture at ~30 fps
-  useEffect(() => {
-    if (!active || !permission?.granted) return;
-
-    const interval = setInterval(handleFrame, 33); // ~30 fps
-    return () => clearInterval(interval);
-  }, [active, permission?.granted, handleFrame]);
-
-  if (!permission) {
+  // Permission states
+  if (!hasPermission) {
     return (
       <View style={styles.container}>
-        <Text style={styles.text}>Requesting camera permission...</Text>
+        <Text style={styles.text}>Camera permission required</Text>
+        <Text
+          style={styles.permissionLink}
+          onPress={requestPermission}
+        >
+          Tap to grant permission
+        </Text>
       </View>
     );
   }
 
-  if (!permission.granted) {
+  if (!device) {
     return (
       <View style={styles.container}>
-        <Text style={styles.text}>Camera permission required</Text>
-        <Text style={styles.subtext}>
-          Grant camera access in Settings to use PPG mode
-        </Text>
+        <Text style={styles.text}>No back camera found</Text>
       </View>
     );
   }
@@ -98,10 +146,15 @@ export function CameraPPGView({ onFrame, active, ppgState, peakCount }: Props) {
 
   return (
     <View style={styles.container}>
-      <CameraView
+      <Camera
         style={styles.camera}
-        facing="back"
-        enableTorch={true}
+        device={device}
+        isActive={active}
+        torch="on"
+        fps={30}
+        pixelFormat="rgb"
+        frameProcessor={frameProcessor}
+        preview={false}
       />
       <View style={styles.overlay}>
         <Text style={styles.instruction}>
@@ -172,6 +225,12 @@ const styles = StyleSheet.create({
   text: {
     color: '#94a3b8',
     fontSize: 14,
+  },
+  permissionLink: {
+    color: '#60a5fa',
+    fontSize: 14,
+    marginTop: 8,
+    textDecorationLine: 'underline',
   },
   subtext: {
     color: '#64748b',

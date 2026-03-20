@@ -24,9 +24,10 @@
     "plugins": [
       "expo-router",
       [
-        "expo-camera",
+        "react-native-vision-camera",
         {
-          "cameraPermission": "Camera is used to detect your pulse via fingertip PPG"
+          "cameraPermissionText": "Camera is used to detect your pulse via fingertip PPG",
+          "enableFrameProcessors": true
         }
       ],
       [
