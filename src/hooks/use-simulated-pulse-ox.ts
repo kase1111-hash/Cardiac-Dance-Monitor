@@ -1,7 +1,10 @@
 /**
  * Simulated pulse oximeter hook — provides the same interface as the real BLE
- * pulse ox but generates PPIs from the rhythm simulator. Used as the primary
- * development environment when no physical hardware is available.
+ * pulse ox but generates PPIs from the rhythm simulator.
+ *
+ * Uses recursive setTimeout so each beat fires at the natural PPI interval
+ * (e.g. 800ms for 75 BPM). All mutable state lives in refs to avoid stale
+ * closures killing the timer chain.
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { RhythmSimulator, type RhythmScenario } from '../../shared/simulator';
@@ -14,65 +17,51 @@ export function useSimulatedPulseOx(
 ): PulseOxInterface & {
   setScenario: (s: RhythmScenario) => void;
 } {
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(
-    autoStart ? 'connected' : 'disconnected',
-  );
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [latestPPI, setLatestPPI] = useState<number | null>(null);
   const [signalQuality, setSignalQuality] = useState<SignalQuality>('disconnected');
-  const [currentScenario, setCurrentScenario] = useState<RhythmScenario>(scenario);
 
-  const simulatorRef = useRef<RhythmSimulator>(new RhythmSimulator({ scenario }));
-  const gateRef = useRef<QualityGate>(new QualityGate());
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // All mutable state in refs — no stale closures
+  const simulatorRef = useRef(new RhythmSimulator({ scenario }));
+  const gateRef = useRef(new QualityGate());
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const runningRef = useRef(false);
 
-  const startSimulation = useCallback(() => {
-    if (intervalRef.current) return;
+  // Track scenario prop for display
+  const scenarioRef = useRef(scenario);
 
+  /** Generate one beat, update state, schedule next. */
+  const tick = useCallback(() => {
+    if (!runningRef.current) return;
+
+    const ppi = simulatorRef.current.next();
+    const valid = gateRef.current.check(ppi);
+
+    if (valid) {
+      setLatestPPI(ppi);
+    }
+    setSignalQuality(gateRef.current.getQualityLevel());
+
+    // Schedule next beat at the natural interval
+    const delay = Math.max(300, Math.min(valid ? ppi : 800, 1500));
+    timerRef.current = setTimeout(tick, delay);
+  }, []);
+
+  const start = useCallback(() => {
+    if (runningRef.current) return;
+    runningRef.current = true;
     setConnectionStatus('connected');
-    // Generate a beat roughly every 800ms (adjusts based on PPI)
-    let lastPpi = 800;
-    intervalRef.current = setInterval(() => {
-      const ppi = simulatorRef.current.next();
-      const valid = gateRef.current.check(ppi);
+    setSignalQuality('poor');
 
-      if (valid) {
-        setLatestPPI(ppi);
-        lastPpi = ppi;
-      }
+    // First beat after a short delay
+    timerRef.current = setTimeout(tick, 500);
+  }, [tick]);
 
-      const quality = gateRef.current.getQualityLevel();
-      setSignalQuality(quality);
-    }, lastPpi);
-
-    // Use dynamic interval: restart with new timing after each beat
-    const dynamicInterval = () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      const ppi = simulatorRef.current.next();
-      const valid = gateRef.current.check(ppi);
-
-      if (valid) {
-        setLatestPPI(ppi);
-        lastPpi = ppi;
-      }
-
-      const quality = gateRef.current.getQualityLevel();
-      setSignalQuality(quality);
-
-      if (connectionStatus !== 'disconnected') {
-        intervalRef.current = setTimeout(dynamicInterval, Math.max(300, Math.min(lastPpi, 1500))) as unknown as ReturnType<typeof setInterval>;
-      }
-    };
-
-    // Clear the fixed interval and switch to dynamic
-    clearInterval(intervalRef.current);
-    intervalRef.current = setTimeout(dynamicInterval, lastPpi) as unknown as ReturnType<typeof setInterval>;
-  }, [connectionStatus]);
-
-  const stopSimulation = useCallback(() => {
-    if (intervalRef.current) {
-      clearTimeout(intervalRef.current as unknown as ReturnType<typeof setTimeout>);
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
+  const stop = useCallback(() => {
+    runningRef.current = false;
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
     }
     setConnectionStatus('disconnected');
     setSignalQuality('disconnected');
@@ -80,48 +69,51 @@ export function useSimulatedPulseOx(
   }, []);
 
   const setScenario = useCallback((s: RhythmScenario) => {
-    setCurrentScenario(s);
+    scenarioRef.current = s;
     simulatorRef.current = new RhythmSimulator({ scenario: s });
     gateRef.current = new QualityGate();
   }, []);
 
-  // Auto-start if requested
+  // Sync scenario prop from context → simulator (fixes issue 3)
   useEffect(() => {
-    if (autoStart && connectionStatus === 'connected') {
-      startSimulation();
+    if (scenario !== scenarioRef.current) {
+      const wasRunning = runningRef.current;
+      stop();
+      setScenario(scenario);
+      if (wasRunning) {
+        // Restart after a microtask so stop() state settles
+        setTimeout(() => start(), 50);
+      }
+    }
+  }, [scenario, stop, setScenario, start]);
+
+  // Auto-start on mount
+  useEffect(() => {
+    if (autoStart) {
+      start();
     }
     return () => {
-      if (intervalRef.current) {
-        clearTimeout(intervalRef.current as unknown as ReturnType<typeof setTimeout>);
-        clearInterval(intervalRef.current);
+      runningRef.current = false;
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
       }
     };
-  }, [autoStart]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Restart simulation when scenario changes
-  useEffect(() => {
-    if (connectionStatus === 'connected') {
-      stopSimulation();
-      startSimulation();
-    }
-  }, [currentScenario]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const connect = useCallback(() => {
+  const connect = useCallback((_deviceId?: string) => {
     setConnectionStatus('connecting');
-    // Simulate a brief connection delay
-    setTimeout(() => {
-      startSimulation();
-    }, 500);
-  }, [startSimulation]);
+    setTimeout(() => start(), 300);
+  }, [start]);
 
   return {
     devices: [{ id: 'sim-001', name: 'Simulated Pulse Ox', rssi: -40 }],
     connect,
-    disconnect: stopSimulation,
+    disconnect: stop,
     connectionStatus,
     latestPPI,
     signalQuality,
-    sourceName: `Simulated (${currentScenario.toUpperCase()})`,
+    sourceName: `Simulated (${scenario.toUpperCase()})`,
     setScenario,
   };
 }
