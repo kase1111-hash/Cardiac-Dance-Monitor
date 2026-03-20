@@ -16,11 +16,13 @@ import {
 } from 'react-native';
 import { useSimulatedPulseOx } from '../../src/hooks/use-simulated-pulse-ox';
 import { useCameraPPG } from '../../src/hooks/use-camera-ppg';
+import { useInnovoPulseOx } from '../../src/hooks/use-innovo-pulse-ox';
 import { useMonitorPipeline } from '../../src/hooks/use-monitor-pipeline';
 import { useSessionRecorder } from '../../src/hooks/use-session-recorder';
 import { useDataSource } from '../../src/context/data-source-context';
 import { SignalQualityBadge } from '../../src/display/SignalQualityBadge';
 import { BPMDisplay } from '../../src/display/BPMDisplay';
+import { SpO2Display } from '../../src/display/SpO2Display';
 import { TorusDisplay } from '../../src/display/TorusDisplay';
 import { DanceCard } from '../../src/display/DanceCard';
 import { ThreeQuestions } from '../../src/display/ThreeQuestions';
@@ -35,16 +37,24 @@ export default function MonitorScreen() {
   const { sourceType, simulatedScenario, baselineResetCounter } = useDataSource();
   const simulated = useSimulatedPulseOx(simulatedScenario);
   const camera = useCameraPPG();
+  const ble = useInnovoPulseOx();
 
   // Select active source based on sourceType
-  const pulseOx = sourceType === 'camera' ? camera : simulated;
+  const pulseOx = sourceType === 'camera' ? camera
+    : sourceType === 'ble' ? ble
+    : simulated;
 
-  // Auto-connect/disconnect camera when source changes
+  // Auto-connect/disconnect camera and BLE when source changes
   useEffect(() => {
     if (sourceType === 'camera') {
       camera.connect('camera');
     } else {
       camera.disconnect();
+    }
+    if (sourceType === 'ble') {
+      ble.connect();
+    } else {
+      ble.disconnect();
     }
   }, [sourceType]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -145,6 +155,11 @@ export default function MonitorScreen() {
 
         {/* BPM display */}
         <BPMDisplay bpm={state.bpm} sourceName={pulseOx.sourceName} />
+
+        {/* SpO2 display (BLE source only — free data from status packets) */}
+        {sourceType === 'ble' && (
+          <SpO2Display spo2={ble.spo2} perfusionIndex={ble.perfusionIndex} />
+        )}
 
         {/* Dance card */}
         <DanceCard match={state.danceMatch} />
