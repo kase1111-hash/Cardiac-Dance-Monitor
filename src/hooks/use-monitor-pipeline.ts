@@ -47,6 +47,47 @@ export interface PipelineState {
   isLearningBaseline: boolean;
   /** Baseline beat count (for display) */
   baselineBeatCount: number;
+  /** Dynamic trail length from autocorrelation (respiratory cycle) */
+  trailLength: number;
+}
+
+const DEFAULT_TRAIL_LENGTH = 20;
+
+/**
+ * Find the dominant oscillation period of a PPI series via autocorrelation.
+ * Returns the lag (in beats) of the first autocorrelation peak after lag 0,
+ * typically 12-25 beats for respiratory sinus arrhythmia.
+ * Returns DEFAULT_TRAIL_LENGTH if no clear peak is found.
+ */
+function computeRespiratoryPeriod(ppis: number[]): number {
+  if (ppis.length < 20) return DEFAULT_TRAIL_LENGTH;
+
+  const n = ppis.length;
+  const m = mean(ppis);
+  const variance = ppis.reduce((s, v) => s + (v - m) ** 2, 0);
+  if (variance < 1) return DEFAULT_TRAIL_LENGTH;
+
+  // Compute normalized autocorrelation for lags 4..30
+  const minLag = 4;   // ignore very short cycles
+  const maxLag = Math.min(30, Math.floor(n / 2));
+  const acf: number[] = [];
+
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    let sum = 0;
+    for (let i = 0; i < n - lag; i++) {
+      sum += (ppis[i] - m) * (ppis[i + lag] - m);
+    }
+    acf.push(sum / variance);
+  }
+
+  // Find first peak: acf[i] > acf[i-1] && acf[i] > acf[i+1] && acf[i] > 0.1
+  for (let i = 1; i < acf.length - 1; i++) {
+    if (acf[i] > acf[i - 1] && acf[i] > acf[i + 1] && acf[i] > 0.1) {
+      return minLag + i;
+    }
+  }
+
+  return DEFAULT_TRAIL_LENGTH;
 }
 
 const DEFAULT_CHANGE_STATUS: ChangeStatus = {
@@ -73,6 +114,7 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
     baselineLearningProgress: 0,
     isLearningBaseline: true,
     baselineBeatCount: 0,
+    trailLength: DEFAULT_TRAIL_LENGTH,
   });
 
   // Ring buffers (mutable refs — no re-render on push)
@@ -163,6 +205,14 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
 
     // BPM + torus display update on EVERY beat
     const currentBpm = buf.length >= 2 ? Math.round(60000 / mean(buf)) : null;
+
+    // Respiratory cycle trail length — recompute every 10 beats (cheap enough)
+    let trailUpdate: Partial<PipelineState> = {};
+    if (totalBeats.current % DANCE_UPDATE_INTERVAL === 0 && buf.length >= 20) {
+      const period = computeRespiratoryPeriod(buf);
+      trailUpdate = { trailLength: period };
+    }
+
     let perBeatUpdate: Partial<PipelineState> = {
       displayPoints: [...displayPoints.current],
       bpm: currentBpm,
@@ -171,6 +221,7 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
       baselineLearningProgress: bs.getLearningProgress(),
       isLearningBaseline: bs.isLearning(),
       baselineBeatCount: bs.getSampleCount(),
+      ...trailUpdate,
     };
 
     // Dance identification + features every DANCE_UPDATE_INTERVAL beats
@@ -250,6 +301,7 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
       baselineLearningProgress: baselineService.current.getLearningProgress(),
       isLearningBaseline: baselineService.current.isLearning(),
       baselineBeatCount: 0,
+      trailLength: DEFAULT_TRAIL_LENGTH,
     });
   }, []);
 

@@ -4,31 +4,32 @@
  * Receives pre-computed TorusPoint[] (using adaptive normalization for visual spread).
  * Pure rendering component — does NOT compute features.
  *
- * Per SPEC Section 4.1:
+ * Visual design:
  * - Dark background, grid lines at 25/50/75%
  * - Diagonal reference line (identity: RR_n = RR_{n+1})
- * - Points sized/opacified by recency
- * - Polyline connecting consecutive points
- * - Latest point: large white ring + bright inner dot
- * - Trail: last 5 points highlighted with gradient fade
- * - Beat counter overlay so user can see live updates
- * - Axis labels
+ * - Old points: small, faded colored dots
+ * - "Snake" trail: last N points (N = respiratory cycle period from autocorrelation)
+ *   rendered as a thick fading polyline with per-segment opacity gradient.
+ *   When RSA is present, the snake traces one complete respiratory ellipse.
+ * - Head: large white dot + outer ring
+ * - Beat counter + point count overlay
  */
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import Svg, {
-  Rect, Line, Circle, Polyline, Text as SvgText,
+  Rect, Line, Circle, Text as SvgText,
 } from 'react-native-svg';
 import type { TorusPoint } from '../../shared/types';
 import { getDanceColor } from '../../shared/dance-colors';
 
 const TWO_PI = 2 * Math.PI;
-const TRAIL_LENGTH = 5;
 
 interface Props {
   points: TorusPoint[];
   danceName: string | null;
   size: number;
+  /** Dynamic trail length from autocorrelation (respiratory cycle). */
+  trailLength?: number;
 }
 
 /** Map an angle [0, 2π) to pixel coordinate [padding, size - padding]. */
@@ -37,13 +38,14 @@ function angleToPixel(angle: number, size: number, padding: number): number {
   return padding + (angle / TWO_PI) * usable;
 }
 
-export function TorusDisplay({ points, danceName, size }: Props) {
+export function TorusDisplay({ points, danceName, size, trailLength = 20 }: Props) {
   // Diagnostic: prove the component receives all points every beat
   const latest = points.length > 0 ? points[points.length - 1] : null;
   if (latest) {
     console.log(
       `TORUS_RENDER pts=${points.length} latest=#${latest.beatIndex}` +
-      ` θ1=${latest.theta1.toFixed(2)} θ2=${latest.theta2.toFixed(2)}`,
+      ` θ1=${latest.theta1.toFixed(2)} θ2=${latest.theta2.toFixed(2)}` +
+      ` trail=${trailLength}`,
     );
   }
 
@@ -55,28 +57,26 @@ export function TorusDisplay({ points, danceName, size }: Props) {
   const gridFractions = [0.25, 0.5, 0.75];
   const gridPositions = gridFractions.map(f => padding + f * inner);
 
-  // Polyline points string
-  const polylineStr = points
-    .map(p => {
-      const x = angleToPixel(p.theta1, size, padding);
-      const y = angleToPixel(p.theta2, size, padding);
-      return `${x},${y}`;
-    })
-    .join(' ');
-
-  // Trail: highlight the last TRAIL_LENGTH points with brighter connecting lines
-  const trailStart = Math.max(0, points.length - TRAIL_LENGTH);
+  // Split points into old (before trail) and trail (last N)
+  const effectiveTrail = Math.min(trailLength, points.length);
+  const trailStart = Math.max(0, points.length - effectiveTrail);
+  const oldPoints = points.slice(0, trailStart);
   const trailPoints = points.slice(trailStart);
-  const trailStr = trailPoints
-    .map(p => {
-      const x = angleToPixel(p.theta1, size, padding);
-      const y = angleToPixel(p.theta2, size, padding);
-      return `${x},${y}`;
-    })
-    .join(' ');
+
+  // Pre-compute trail pixel coordinates
+  const trailCoords = trailPoints.map(p => ({
+    x: angleToPixel(p.theta1, size, padding),
+    y: angleToPixel(p.theta2, size, padding),
+    beatIndex: p.beatIndex,
+  }));
 
   // Beat count from latest point's beatIndex
   const beatCount = latest?.beatIndex ?? 0;
+
+  // Dim polyline for ALL points (faint history trace)
+  const allPolyStr = points
+    .map(p => `${angleToPixel(p.theta1, size, padding)},${angleToPixel(p.theta2, size, padding)}`)
+    .join(' ');
 
   return (
     <View style={[styles.container, { width: size, height: size }]}>
@@ -112,35 +112,13 @@ export function TorusDisplay({ points, danceName, size }: Props) {
           stroke="#1a1a2e" strokeWidth={1} strokeDasharray="4,4"
         />
 
-        {/* Polyline connecting all points (dim) */}
-        {points.length >= 2 && (
-          <Polyline
-            points={polylineStr}
-            fill="none"
-            stroke={color}
-            strokeWidth={1}
-            strokeOpacity={0.15}
-          />
-        )}
-
-        {/* Trail polyline — bright line for last N points */}
-        {trailPoints.length >= 2 && (
-          <Polyline
-            points={trailStr}
-            fill="none"
-            stroke="#ffffff"
-            strokeWidth={2}
-            strokeOpacity={0.5}
-          />
-        )}
-
-        {/* Older points — small and faded */}
-        {points.slice(0, trailStart).map((p, i) => {
+        {/* Old points — small, faded dots */}
+        {oldPoints.map((p, i) => {
           const x = angleToPixel(p.theta1, size, padding);
           const y = angleToPixel(p.theta2, size, padding);
           const recency = points.length > 1 ? i / (points.length - 1) : 0;
-          const radius = 1.5 + recency * 2;
-          const opacity = 0.1 + recency * 0.3;
+          const radius = 1.5 + recency * 1.5;
+          const opacity = 0.08 + recency * 0.15;
 
           return (
             <Circle
@@ -152,51 +130,82 @@ export function TorusDisplay({ points, danceName, size }: Props) {
           );
         })}
 
-        {/* Trail points — gradient from dim to bright */}
-        {trailPoints.map((p, i) => {
-          const x = angleToPixel(p.theta1, size, padding);
-          const y = angleToPixel(p.theta2, size, padding);
-          const isLatest = i === trailPoints.length - 1;
-          // Trail fade: 0.4 → 0.7 → 1.0 across trail
-          const trailFrac = trailPoints.length > 1 ? i / (trailPoints.length - 1) : 1;
-          const radius = isLatest ? 7 : 3 + trailFrac * 3;
-          const opacity = isLatest ? 1.0 : 0.4 + trailFrac * 0.4;
+        {/* Snake trail — per-segment lines with fading width and opacity.
+            Tail is thin and dim, head is thick and bright. */}
+        {trailCoords.map((coord, i) => {
+          if (i === 0) return null;
+          const prev = trailCoords[i - 1];
+          const frac = trailCoords.length > 1 ? i / (trailCoords.length - 1) : 1;
+          // Width: 1px at tail → 3px at head
+          const strokeWidth = 1 + frac * 2;
+          // Opacity: 0.1 at tail → 0.8 at head
+          const opacity = 0.1 + frac * 0.7;
 
           return (
-            <React.Fragment key={`trail-${p.beatIndex}`}>
-              {/* Glow behind trail points */}
-              <Circle
-                cx={x} cy={y} r={radius + 3}
-                fill={isLatest ? '#ffffff' : color}
-                fillOpacity={isLatest ? 0.15 : opacity * 0.2}
-              />
-              {/* Trail dot */}
-              <Circle
-                cx={x} cy={y} r={radius}
-                fill={isLatest ? '#ffffff' : color}
-                fillOpacity={opacity}
-              />
-              {/* Latest point: outer ring */}
-              {isLatest && (
-                <>
-                  <Circle
-                    cx={x} cy={y} r={12}
-                    fill="none"
-                    stroke="#ffffff"
-                    strokeWidth={2}
-                    strokeOpacity={0.9}
-                  />
-                  {/* Inner colored dot */}
-                  <Circle
-                    cx={x} cy={y} r={4}
-                    fill={color}
-                    fillOpacity={1}
-                  />
-                </>
-              )}
-            </React.Fragment>
+            <Line
+              key={`seg-${coord.beatIndex}`}
+              x1={prev.x} y1={prev.y}
+              x2={coord.x} y2={coord.y}
+              stroke="#ffffff"
+              strokeWidth={strokeWidth}
+              strokeOpacity={opacity}
+              strokeLinecap="round"
+            />
           );
         })}
+
+        {/* Trail dots — small dots along the snake body */}
+        {trailCoords.map((coord, i) => {
+          const isLatest = i === trailCoords.length - 1;
+          if (isLatest) return null; // Head rendered separately
+          const frac = trailCoords.length > 1 ? i / (trailCoords.length - 1) : 0;
+          const radius = 1.5 + frac * 2.5;
+          const opacity = 0.15 + frac * 0.5;
+
+          return (
+            <Circle
+              key={`td-${coord.beatIndex}`}
+              cx={coord.x} cy={coord.y} r={radius}
+              fill={color}
+              fillOpacity={opacity}
+            />
+          );
+        })}
+
+        {/* Snake head — large, bright, unmissable */}
+        {trailCoords.length > 0 && (() => {
+          const head = trailCoords[trailCoords.length - 1];
+          return (
+            <>
+              {/* Outer glow */}
+              <Circle
+                cx={head.x} cy={head.y} r={14}
+                fill="#ffffff"
+                fillOpacity={0.08}
+              />
+              {/* White ring */}
+              <Circle
+                cx={head.x} cy={head.y} r={10}
+                fill="none"
+                stroke="#ffffff"
+                strokeWidth={2}
+                strokeOpacity={0.9}
+              />
+              {/* Bright white center */}
+              <Circle
+                cx={head.x} cy={head.y} r={5}
+                fill="#ffffff"
+                fillOpacity={1}
+              />
+              {/* Colored inner dot */}
+              <Circle
+                cx={head.x} cy={head.y} r={3}
+                fill={color}
+                fillOpacity={1}
+              />
+            </>
+          );
+        })()}
 
         {/* Axis labels */}
         <SvgText

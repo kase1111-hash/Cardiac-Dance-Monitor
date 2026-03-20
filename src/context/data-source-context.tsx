@@ -15,6 +15,9 @@ interface DataSourceContextValue {
   /** Signal filter sensitivity: 0 = accept all, 1.0 = strict (40% deviation rejection) */
   filterSensitivity: number;
   setFilterSensitivity: (v: number) => void;
+  /** Incremented when user requests baseline reset from Settings */
+  baselineResetCounter: number;
+  requestBaselineReset: () => void;
 }
 
 const DataSourceContext = createContext<DataSourceContextValue>({
@@ -24,18 +27,25 @@ const DataSourceContext = createContext<DataSourceContextValue>({
   setSimulatedScenario: () => {},
   filterSensitivity: 0,
   setFilterSensitivity: () => {},
+  baselineResetCounter: 0,
+  requestBaselineReset: () => {},
 });
 
 export function DataSourceProvider({ children }: { children: ReactNode }) {
   const [sourceType, setSourceType] = useState<DataSourceType>('simulated');
   const [simulatedScenario, setSimulatedScenario] = useState<RhythmScenario>('nsr');
   const [filterSensitivity, setFilterSensitivity] = useState(0);
+  const [baselineResetCounter, setBaselineResetCounter] = useState(0);
 
   // Auto-set default sensitivity when source changes
   const handleSetSourceType = (t: DataSourceType) => {
     setSourceType(t);
     // Default: 0% for simulated, 40% for BLE/camera
     setFilterSensitivity(t === 'simulated' ? 0 : 0.4);
+  };
+
+  const requestBaselineReset = () => {
+    setBaselineResetCounter(c => c + 1);
   };
 
   return (
@@ -46,6 +56,8 @@ export function DataSourceProvider({ children }: { children: ReactNode }) {
       setSimulatedScenario,
       filterSensitivity,
       setFilterSensitivity,
+      baselineResetCounter,
+      requestBaselineReset,
     }}>
       {children}
     </DataSourceContext.Provider>

@@ -22,7 +22,7 @@ const SCENARIOS: Array<{ id: RhythmScenario; label: string; description: string 
 ];
 
 export default function SettingsScreen() {
-  const { sourceType, setSourceType, simulatedScenario, setSimulatedScenario, filterSensitivity, setFilterSensitivity } = useDataSource();
+  const { sourceType, setSourceType, simulatedScenario, setSimulatedScenario, filterSensitivity, setFilterSensitivity, requestBaselineReset } = useDataSource();
   const [devMode, setDevMode] = useState(false);
   const [ppgValidation, setPPGValidation] = useState(false);
 
@@ -36,8 +36,7 @@ export default function SettingsScreen() {
           text: 'Reset',
           style: 'destructive',
           onPress: () => {
-            // Baseline reset is handled by the monitor pipeline
-            // This emits an event that the monitor screen listens to
+            requestBaselineReset();
             Alert.alert('Baseline Reset', 'Your baseline has been cleared. The monitor will re-learn your rhythm pattern.');
           },
         },

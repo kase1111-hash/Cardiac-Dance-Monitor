@@ -32,7 +32,7 @@ import { sessionStore } from '../../src/session/session-store-instance';
 export default function MonitorScreen() {
   const { width } = useWindowDimensions();
   const torusSize = Math.min(width - 32, 300);
-  const { sourceType, simulatedScenario } = useDataSource();
+  const { sourceType, simulatedScenario, baselineResetCounter } = useDataSource();
   const simulated = useSimulatedPulseOx(simulatedScenario);
   const camera = useCameraPPG();
 
@@ -51,10 +51,19 @@ export default function MonitorScreen() {
   const handleCameraFrame = useCallback((redMean: number, timestampMs: number) => {
     camera.processFrame(redMean, timestampMs);
   }, [camera]);
-  const { state, processPPI, reset } = useMonitorPipeline();
+  const { state, processPPI, reset, resetBaseline } = useMonitorPipeline();
   const { recState, startSession, recordBeat, endSession } = useSessionRecorder();
 
   const sessionStarted = useRef(false);
+  const prevResetCounter = useRef(baselineResetCounter);
+
+  // Watch for baseline reset requests from Settings
+  useEffect(() => {
+    if (baselineResetCounter > prevResetCounter.current) {
+      prevResetCounter.current = baselineResetCounter;
+      resetBaseline();
+    }
+  }, [baselineResetCounter, resetBaseline]);
 
   // Use latestBeat (includes sequence counter) so every beat triggers the effect,
   // even if two consecutive PPIs happen to have the same numeric value.
@@ -145,6 +154,7 @@ export default function MonitorScreen() {
           points={state.displayPoints}
           danceName={danceName}
           size={torusSize}
+          trailLength={state.trailLength}
         />
 
         {/* Baseline indicator */}
