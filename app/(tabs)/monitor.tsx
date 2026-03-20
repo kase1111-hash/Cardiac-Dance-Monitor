@@ -1,20 +1,21 @@
 /**
- * Main monitor screen — the full Phase 1 pipeline running end-to-end.
+ * Main monitor screen — the full pipeline running end-to-end.
  *
  * Data flow:
- * 1. Data source (simulated or BLE) produces PPIs
- * 2. Quality gate filters PPIs (handled in simulated pulse ox)
+ * 1. Data source (simulated, BLE, or camera) produces PPIs
+ * 2. Quality gate filters PPIs
  * 3. Valid PPIs feed into pipeline (dual normalization)
  * 4. Every beat: compute torus point (adaptive for display, fixed for features)
  * 5. Every 10 beats: compute κ median, Gini, spread → match dance
  * 6. Update all display components
  * 7. Session records all data
  */
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, ScrollView, useWindowDimensions,
 } from 'react-native';
 import { useSimulatedPulseOx } from '../../src/hooks/use-simulated-pulse-ox';
+import { useCameraPPG } from '../../src/hooks/use-camera-ppg';
 import { useMonitorPipeline } from '../../src/hooks/use-monitor-pipeline';
 import { useSessionRecorder } from '../../src/hooks/use-session-recorder';
 import { useDataSource } from '../../src/context/data-source-context';
@@ -25,13 +26,38 @@ import { DanceCard } from '../../src/display/DanceCard';
 import { ThreeQuestions } from '../../src/display/ThreeQuestions';
 import { MetricsRow } from '../../src/display/MetricsRow';
 import { BaselineIndicator } from '../../src/display/BaselineIndicator';
+import { CameraPPGView } from '../../src/display/CameraPPGView';
 import { sessionStore } from './history';
 
 export default function MonitorScreen() {
   const { width } = useWindowDimensions();
   const torusSize = Math.min(width - 32, 300);
-  const { simulatedScenario } = useDataSource();
-  const pulseOx = useSimulatedPulseOx(simulatedScenario);
+  const { sourceType, simulatedScenario } = useDataSource();
+  const simulated = useSimulatedPulseOx(simulatedScenario);
+  const camera = useCameraPPG();
+
+  // Select active source based on sourceType
+  const pulseOx = sourceType === 'camera' ? camera : simulated;
+
+  // Auto-connect/disconnect camera when source changes
+  useEffect(() => {
+    if (sourceType === 'camera') {
+      camera.connect('camera');
+    } else {
+      camera.disconnect();
+    }
+  }, [sourceType]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-connect simulated when selected
+  useEffect(() => {
+    if (sourceType === 'simulated' && simulated.connectionStatus === 'disconnected') {
+      simulated.connect('simulated');
+    }
+  }, [sourceType]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleCameraFrame = useCallback((redMean: number, timestampMs: number) => {
+    camera.processFrame(redMean, timestampMs);
+  }, [camera]);
   const { state, processPPI, reset } = useMonitorPipeline();
   const { recState, startSession, recordBeat, endSession } = useSessionRecorder();
 
@@ -98,6 +124,16 @@ export default function MonitorScreen() {
           </Text>
           <SignalQualityBadge quality={pulseOx.signalQuality} />
         </View>
+
+        {/* Camera PPG view (shown only when camera source active) */}
+        {sourceType === 'camera' && (
+          <CameraPPGView
+            onFrame={handleCameraFrame}
+            active={camera.connectionStatus === 'connected'}
+            ppgState={camera.ppgState}
+            peakCount={camera.peakCount}
+          />
+        )}
 
         {/* BPM display */}
         <BPMDisplay bpm={state.bpm} sourceName={pulseOx.sourceName} />
