@@ -167,6 +167,11 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
         const match = matchDance(km, g, s);
         match.bpm = currentBpm ?? 0;
 
+        // Diagnostic: verify features match expected dance centroids
+        console.log(
+          `[Dance] beat=${totalBeats.current} κ=${km.toFixed(1)} G=${g.toFixed(3)} σ=${s.toFixed(2)} → ${match.name} (${(match.confidence * 100).toFixed(0)}%) BPM=${currentBpm}`,
+        );
+
         // Baseline learning
         const bs = baselineService.current;
         if (bs.isLearning()) {

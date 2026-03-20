@@ -5,10 +5,14 @@
  * Uses recursive setTimeout so each beat fires at the natural PPI interval
  * (e.g. 800ms for 75 BPM). All mutable state lives in refs to avoid stale
  * closures killing the timer chain.
+ *
+ * NO quality gate — simulated beats are intentionally generated for each
+ * scenario. Filtering them would defeat the purpose and produce wrong dance
+ * features (the gate's 40% deviation rejection silently drops AF/PVC beats).
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { RhythmSimulator, type RhythmScenario } from '../../shared/simulator';
-import { QualityGate } from '../../shared/quality-gate';
+import { PPI_MIN, PPI_MAX } from '../../shared/constants';
 import type { PulseOxInterface, ConnectionStatus, SignalQuality } from '../ble/ble-service';
 
 export function useSimulatedPulseOx(
@@ -23,7 +27,6 @@ export function useSimulatedPulseOx(
 
   // All mutable state in refs — no stale closures
   const simulatorRef = useRef(new RhythmSimulator({ scenario }));
-  const gateRef = useRef(new QualityGate());
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
 
@@ -35,15 +38,18 @@ export function useSimulatedPulseOx(
     if (!runningRef.current) return;
 
     const ppi = simulatorRef.current.next();
-    const valid = gateRef.current.check(ppi);
 
-    if (valid) {
+    // Range check only — no deviation rejection for simulated data
+    const inRange = ppi >= PPI_MIN && ppi <= PPI_MAX;
+
+    if (inRange) {
       setLatestPPI(ppi);
+      setSignalQuality('good');
     }
-    setSignalQuality(gateRef.current.getQualityLevel());
+    // Out-of-range beats still schedule the next tick but don't emit
 
     // Schedule next beat at the natural interval
-    const delay = Math.max(300, Math.min(valid ? ppi : 800, 1500));
+    const delay = Math.max(300, Math.min(inRange ? ppi : 800, 1500));
     timerRef.current = setTimeout(tick, delay);
   }, []);
 
@@ -51,7 +57,7 @@ export function useSimulatedPulseOx(
     if (runningRef.current) return;
     runningRef.current = true;
     setConnectionStatus('connected');
-    setSignalQuality('poor');
+    setSignalQuality('good');
 
     // First beat after a short delay
     timerRef.current = setTimeout(tick, 500);
@@ -71,10 +77,9 @@ export function useSimulatedPulseOx(
   const setScenario = useCallback((s: RhythmScenario) => {
     scenarioRef.current = s;
     simulatorRef.current = new RhythmSimulator({ scenario: s });
-    gateRef.current = new QualityGate();
   }, []);
 
-  // Sync scenario prop from context → simulator (fixes issue 3)
+  // Sync scenario prop from context → simulator
   useEffect(() => {
     if (scenario !== scenarioRef.current) {
       const wasRunning = runningRef.current;
