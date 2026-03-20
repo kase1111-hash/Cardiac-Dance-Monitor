@@ -56,10 +56,16 @@ export default function MonitorScreen() {
 
   const sessionStarted = useRef(false);
 
+  // Use latestBeat (includes sequence counter) so every beat triggers the effect,
+  // even if two consecutive PPIs happen to have the same numeric value.
+  const latestBeat = 'latestBeat' in pulseOx ? (pulseOx as any).latestBeat : null;
+
   // Feed PPIs from pulse source into the pipeline
   useEffect(() => {
-    if (pulseOx.latestPPI !== null) {
-      processPPI(pulseOx.latestPPI);
+    const ppi = latestBeat?.ppi ?? pulseOx.latestPPI;
+    if (ppi !== null && ppi !== undefined) {
+      console.log('BEAT', state.totalBeats + 1, 'ppi=', ppi);
+      processPPI(ppi);
 
       // Auto-start session on first valid PPI
       if (!sessionStarted.current) {
@@ -70,7 +76,7 @@ export default function MonitorScreen() {
       // Record beat for session
       recordBeat(state.danceMatch);
     }
-  }, [pulseOx.latestPPI]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [latestBeat, pulseOx.latestPPI]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-end session when disconnected
   const disconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
