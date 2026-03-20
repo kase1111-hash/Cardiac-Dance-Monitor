@@ -1,9 +1,27 @@
 /**
  * Baseline learning module tests — SPEC Section 10 (Baseline & Change).
+ *
+ * countBeat() is called every raw PPI (every beat).
+ * addSample() is called every DANCE_UPDATE_INTERVAL beats with computed features.
+ * Baseline establishes after BASELINE_MIN_BEATS raw beats (not feature samples).
  */
 import { BaselineService } from '../baseline/baseline-service';
 import { MemoryStorage } from '../session/session-store';
-import { BASELINE_MIN_BEATS } from '../../shared/constants';
+import { BASELINE_MIN_BEATS, DANCE_UPDATE_INTERVAL } from '../../shared/constants';
+
+/** Simulate N raw beats, calling addSample every DANCE_UPDATE_INTERVAL beats. */
+function feedBeats(
+  service: BaselineService,
+  count: number,
+  kappa = 10.0, gini = 0.4, spread = 1.0, bpm = 75,
+) {
+  for (let i = 1; i <= count; i++) {
+    service.countBeat();
+    if (i % DANCE_UPDATE_INTERVAL === 0) {
+      service.addSample(kappa, gini, spread, bpm);
+    }
+  }
+}
 
 describe('BaselineService', () => {
   let storage: MemoryStorage;
@@ -14,19 +32,14 @@ describe('BaselineService', () => {
     service = new BaselineService(storage);
   });
 
-  test('baseline not established with < 200 beats', () => {
-    for (let i = 0; i < 199; i++) {
-      service.addSample(10.0, 0.4, 1.0, 75);
-    }
+  test('baseline not established with < 200 raw beats', () => {
+    feedBeats(service, 199);
     expect(service.getBaseline()).toBeNull();
     expect(service.isLearning()).toBe(true);
   });
 
-  test('baseline established after 200+ beats with correct mean/sd', () => {
-    // Feed samples with known values
-    for (let i = 0; i < BASELINE_MIN_BEATS; i++) {
-      service.addSample(10.0, 0.4, 1.0, 75);
-    }
+  test('baseline established after 200+ raw beats with correct mean/sd', () => {
+    feedBeats(service, BASELINE_MIN_BEATS);
     // Duration check won't pass in test (only ms elapsed), so force-establish
     service.forceEstablish();
 
@@ -42,9 +55,15 @@ describe('BaselineService', () => {
   });
 
   test('baseline established with variable data has nonzero sd', () => {
-    for (let i = 0; i < BASELINE_MIN_BEATS; i++) {
-      const kappa = 10.0 + (i % 2 === 0 ? 1 : -1);
-      service.addSample(kappa, 0.4, 1.0, 75);
+    let sampleIdx = 0;
+    for (let i = 1; i <= BASELINE_MIN_BEATS; i++) {
+      service.countBeat();
+      if (i % DANCE_UPDATE_INTERVAL === 0) {
+        // Alternate +1/-1 by sample index to get mean ~10 with nonzero sd
+        const kappa = 10.0 + (sampleIdx % 2 === 0 ? 1 : -1);
+        service.addSample(kappa, 0.4, 1.0, 75);
+        sampleIdx++;
+      }
     }
     service.forceEstablish();
 
@@ -54,9 +73,7 @@ describe('BaselineService', () => {
   });
 
   test('baseline persists after simulated app restart', async () => {
-    for (let i = 0; i < BASELINE_MIN_BEATS; i++) {
-      service.addSample(10.0, 0.4, 1.0, 75);
-    }
+    feedBeats(service, BASELINE_MIN_BEATS);
     service.forceEstablish();
     await service.save();
 
@@ -71,9 +88,7 @@ describe('BaselineService', () => {
   });
 
   test('reset clears baseline and re-enters learning mode', async () => {
-    for (let i = 0; i < BASELINE_MIN_BEATS; i++) {
-      service.addSample(10.0, 0.4, 1.0, 75);
-    }
+    feedBeats(service, BASELINE_MIN_BEATS);
     service.forceEstablish();
     expect(service.isLearning()).toBe(false);
 
@@ -85,15 +100,14 @@ describe('BaselineService', () => {
   });
 
   test('baseline is frozen — new data after establishment does NOT change stored values', () => {
-    for (let i = 0; i < BASELINE_MIN_BEATS; i++) {
-      service.addSample(10.0, 0.4, 1.0, 75);
-    }
+    feedBeats(service, BASELINE_MIN_BEATS);
     service.forceEstablish();
 
     const baselineBefore = { ...service.getBaseline()! };
 
-    // Feed very different data
+    // Feed very different data (these are ignored because frozen)
     for (let i = 0; i < 100; i++) {
+      service.countBeat();
       service.addSample(50.0, 0.9, 5.0, 120);
     }
 
@@ -103,24 +117,19 @@ describe('BaselineService', () => {
     expect(baselineAfter.spreadMean).toBe(baselineBefore.spreadMean);
   });
 
-  test('learning progress tracks correctly', () => {
+  test('learning progress tracks raw beats correctly', () => {
     expect(service.getLearningProgress()).toBe(0);
 
-    for (let i = 0; i < 100; i++) {
-      service.addSample(10.0, 0.4, 1.0, 75);
-    }
+    feedBeats(service, 100);
     expect(service.getLearningProgress()).toBeCloseTo(0.5, 1);
 
-    for (let i = 0; i < 100; i++) {
-      service.addSample(10.0, 0.4, 1.0, 75);
-    }
+    feedBeats(service, 100);
     expect(service.getLearningProgress()).toBe(1);
   });
 
-  test('forceEstablish fails with < BASELINE_MIN_BEATS samples', () => {
-    for (let i = 0; i < 10; i++) {
-      service.addSample(10.0, 0.4, 1.0, 75);
-    }
+  test('forceEstablish fails with < BASELINE_MIN_BEATS raw beats', () => {
+    // Only 10 raw beats (1 feature sample)
+    feedBeats(service, 10);
     expect(service.forceEstablish()).toBe(false);
     expect(service.getBaseline()).toBeNull();
   });
