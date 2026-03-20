@@ -1,6 +1,6 @@
 import React from 'react';
 import { Tabs } from 'expo-router';
-import Svg, { Path, Circle, Rect, Line } from 'react-native-svg';
+import Svg, { Path, Circle } from 'react-native-svg';
 
 /** Simple inline SVG icons — no external icon library needed. */
 function MonitorIcon({ color, size = 24 }: { color: string; size?: number }) {

@@ -27,7 +27,7 @@ import { ThreeQuestions } from '../../src/display/ThreeQuestions';
 import { MetricsRow } from '../../src/display/MetricsRow';
 import { BaselineIndicator } from '../../src/display/BaselineIndicator';
 import { CameraPPGView } from '../../src/display/CameraPPGView';
-import { sessionStore } from './history';
+import { sessionStore } from '../../src/session/session-store-instance';
 
 export default function MonitorScreen() {
   const { width } = useWindowDimensions();
