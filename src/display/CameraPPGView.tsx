@@ -116,6 +116,8 @@ export function CameraPPGView({ onFrame, active, ppgState, peakCount }: Props) {
     handleRedMean(redMean, timestamp);
   }, [handleRedMean]);
 
+  console.log('CAMERA device=' + !!device + ' format=' + !!format + ' permission=' + hasPermission);
+
   // Permission states
   if (!hasPermission) {
     return (

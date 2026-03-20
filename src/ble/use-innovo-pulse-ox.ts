@@ -202,6 +202,7 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
               if (!characteristic?.value) return;
 
               const bytes = base64ToBytes(characteristic.value);
+              console.log('BLE_RAW', bytes.length, 'bytes:', Array.from(bytes));
               handler.current.handleNotification(bytes, Date.now());
             },
           );

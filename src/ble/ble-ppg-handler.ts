@@ -65,6 +65,7 @@ export class BLEPPGHandler {
     }
 
     if (packet.type === 'status') {
+      console.log('BLE_STATUS spo2=' + packet.spo2 + ' bpm=' + packet.bpm + ' pi=' + packet.perfusionIndex);
       this._latestStatus = packet;
       // Update finger presence from status packet too
       this.updateFingerPresence(packet.fingerPresent);
@@ -75,6 +76,7 @@ export class BLEPPGHandler {
     }
 
     // Raw PPG packet
+    console.log('BLE_PPG value=' + packet.intensity);
     this.handleRawPPG(packet.fingerPresent, packet.intensity, timestampMs);
   }
 
@@ -147,6 +149,7 @@ export class BLEPPGHandler {
   /** Wire the onPPI callback through to the processor. */
   private wireOnPPI(): void {
     this.processor.onPPI = (ppi: number) => {
+      console.log('BLE_PPI=' + ppi);
       if (this.onPPI) {
         this.onPPI(ppi);
       }
