@@ -1,7 +1,7 @@
 export interface PulseSample {
   timestamp: number;     // Unix ms
   ppiMs: number;         // pulse-to-pulse interval in milliseconds
-  source: 'ble_rr' | 'ble_hr' | 'camera_ppg';
+  source: 'ble_rr' | 'ble_hr' | 'ble_ppg' | 'camera_ppg';
   valid: boolean;
 }
 
