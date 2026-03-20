@@ -12,7 +12,7 @@
  * Exposes PulseOxInterface + SpO2/PI for the monitor pipeline.
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Platform } from 'react-native';
+import { Platform, PermissionsAndroid, Alert } from 'react-native';
 import { BleManager, type Device, type Subscription } from 'react-native-ble-plx';
 import { BLEPPGHandler, INNOVO_PPG_SAMPLE_RATE } from './ble-ppg-handler';
 import { QualityGate } from '../../shared/quality-gate';
@@ -42,6 +42,52 @@ function getManager(): BleManager {
     sharedManager = new BleManager();
   }
   return sharedManager;
+}
+
+/**
+ * Request Android runtime BLE permissions (API 31+).
+ * Returns true if all granted, false if any denied.
+ */
+async function requestBLEPermissions(): Promise<boolean> {
+  if (Platform.OS !== 'android') return true;
+
+  // Android 12+ (API 31) requires BLUETOOTH_SCAN and BLUETOOTH_CONNECT
+  if (Platform.Version >= 31) {
+    const result = await PermissionsAndroid.requestMultiple([
+      PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+      PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+    ]);
+    const allGranted = Object.values(result).every(
+      v => v === PermissionsAndroid.RESULTS.GRANTED,
+    );
+    if (!allGranted) {
+      Alert.alert(
+        'Bluetooth Permissions Required',
+        'Please grant Bluetooth and Location permissions in Settings to connect to the Innovo pulse oximeter.',
+      );
+      return false;
+    }
+    return true;
+  }
+
+  // Android < 12: only location needed for BLE scanning
+  const granted = await PermissionsAndroid.request(
+    PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+    {
+      title: 'Location Permission',
+      message: 'Bluetooth Low Energy scanning requires location permission.',
+      buttonPositive: 'OK',
+    },
+  );
+  if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+    Alert.alert(
+      'Location Permission Required',
+      'Please grant Location permission in Settings to scan for Bluetooth devices.',
+    );
+    return false;
+  }
+  return true;
 }
 
 export function useInnovoPulseOx(): InnovoPulseOxResult {
@@ -83,6 +129,11 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
 
   const connect = useCallback(async (_deviceId?: string) => {
     if (activeRef.current) return;
+
+    // Request runtime permissions (Android)
+    const permitted = await requestBLEPermissions();
+    if (!permitted) return;
+
     activeRef.current = true;
 
     handler.current.reset();

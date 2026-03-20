@@ -50,7 +50,7 @@
             "composeCompilerVersion": "1.5.14",
             "compileSdkVersion": 35,
             "targetSdkVersion": 34,
-            "minSdkVersion": 24
+            "minSdkVersion": 26
           }
         }
       ],
