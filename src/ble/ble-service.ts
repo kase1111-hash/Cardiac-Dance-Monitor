@@ -1,35 +1,48 @@
 /**
  * BLE pulse oximeter service — scans for devices advertising Heart Rate Service
- * (0x180D) or Nordic-style PPG Service (0xFFF0), connects, subscribes to
+ * (0x180D) or Nordic UART Service (6e400001-...), connects, subscribes to
  * notifications, and parses data per the relevant protocol.
  *
  * Two BLE modes:
  * - Standard HR (0x180D): Heart Rate Measurement (0x2A37) → HR + RR intervals
- * - Raw PPG (0xFFF0): PPG waveform (0xFFF1) → intensity stream → PPGProcessor → PPIs
+ * - Raw PPG via Nordic UART: Two packet types on TX characteristic (6e400003-...):
+ *     • Short (2 bytes):  raw PPG waveform at 28 Hz → PPGProcessor → PPIs
+ *     • Long  (13 bytes): computed SpO2/BPM/PI once per second → display + validation
  *
- * This module defines the shared interface. The real BLE implementation requires
- * react-native-ble-plx and a physical device. The simulated version is in
- * use-simulated-pulse-ox.ts.
+ * Protocol decoded from Innovo iP900BP-B real device captures.
+ * See innovo-ble-protocol.md for full documentation.
  */
 
 // --- Standard Heart Rate Service UUIDs ---
 export const HEART_RATE_SERVICE_UUID = '0000180d-0000-1000-8000-00805f9b34fb';
 export const HEART_RATE_MEASUREMENT_UUID = '00002a37-0000-1000-8000-00805f9b34fb';
 
-// --- Nordic-style PPG Service UUIDs (Innovo iP900BP-B and similar) ---
-export const PPG_SERVICE_UUID = '0000fff0-0000-1000-8000-00805f9b34fb';
-export const PPG_CHARACTERISTIC_UUID = '0000fff1-0000-1000-8000-00805f9b34fb';
+// --- Nordic UART Service UUIDs (Innovo iP900BP-B and similar) ---
+export const NORDIC_UART_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+export const NORDIC_UART_TX_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // notify
+export const NORDIC_UART_RX_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // write
+
+// --- Innovo PPG characteristic (advertised under Nordic UART service) ---
+// The actual data characteristic is 0xFFF1, not the Nordic UART TX UUID.
+export const INNOVO_PPG_CHARACTERISTIC_UUID = '0000fff1-0000-1000-8000-00805f9b34fb';
+
+// Innovo device name prefix for scan filtering
+export const INNOVO_DEVICE_NAME = 'iP900BPB';
+
+// Legacy aliases — kept for backward compatibility with any code referencing old names
+export const PPG_SERVICE_UUID = NORDIC_UART_SERVICE_UUID;
+export const PPG_CHARACTERISTIC_UUID = INNOVO_PPG_CHARACTERISTIC_UUID;
 
 /** Short-form UUIDs for scan filtering */
 export const SCAN_SERVICE_UUIDS = [
   HEART_RATE_SERVICE_UUID,
-  PPG_SERVICE_UUID,
+  NORDIC_UART_SERVICE_UUID,
 ];
 
 /**
  * BLE operating mode — determined by which service the device advertises.
  * - standard_hr: Device exposes 0x180D Heart Rate Service with RR intervals
- * - raw_ppg: Device exposes 0xFFF0 Nordic PPG Service with raw waveform data
+ * - raw_ppg: Device exposes Nordic UART Service with raw waveform + status packets
  */
 export type BLEMode = 'standard_hr' | 'raw_ppg';
 
@@ -115,15 +128,111 @@ export function ppiFromHeartRate(bpm: number): number {
   return Math.round(60000 / bpm);
 }
 
+// ---------------------------------------------------------------------------
+// Nordic UART PPG packet types (Innovo protocol)
+// ---------------------------------------------------------------------------
+
 /**
- * Parse a Nordic-style PPG notification (0xFFF1) from devices like Innovo iP900BP-B.
- *
- * Data format: 2 bytes per packet
- * - Byte 0: Status/channel (0x01 = finger present, other values = finger removed)
+ * Raw PPG packet — 2 bytes, received at ~28 Hz.
+ * - Byte 0: Status/channel (0x01 = finger present, other = finger removed)
  * - Byte 1: PPG intensity (0x00–0xFF)
- *
- * When finger is removed, intensity drops to 0x00.
  */
+export interface RawPPGPacket {
+  type: 'raw';
+  fingerPresent: boolean;
+  intensity: number; // 0-255
+}
+
+/**
+ * Status packet — 13 bytes, received ~1/second.
+ * Contains device-computed vitals: SpO2, BPM, perfusion index.
+ *
+ * Byte layout (from real device captures):
+ *   [0]    0x3E  header/sync byte
+ *   [1]    SpO2 percentage (0-100, or 127 = invalid/searching)
+ *   [2]    reserved
+ *   [3]    BPM (heart rate)
+ *   [4]    reserved
+ *   [5]    Perfusion Index × 10 (e.g. 35 = PI 3.5%)
+ *   [6-11] Reserved / waveform metadata (ignored)
+ *   [12]   0xF0  trailer/sync byte
+ */
+export interface StatusPacket {
+  type: 'status';
+  fingerPresent: boolean;
+  searching: boolean;
+  bpm: number;
+  spo2: number;        // 0-100, or -1 if invalid
+  perfusionIndex: number; // 0.0-25.5 (tenths)
+}
+
+/** Discriminated union of both packet types */
+export type InnovoPacket = RawPPGPacket | StatusPacket;
+
+/**
+ * Parse an Innovo PPG notification from characteristic 0xFFF1.
+ * Discriminates packet type by length and header/trailer bytes:
+ * - 2 bytes starting with 0x01 → raw PPG sample (28 Hz)
+ * - 13 bytes starting with 0x3E and ending with 0xF0 → status/vitals (1 Hz)
+ */
+export function parseInnovoPacket(data: Uint8Array): InnovoPacket | null {
+  if (data.length === 2) {
+    return parseRawPPGPacket(data);
+  }
+  if (data.length >= 13 && data[0] === 0x3E && data[12] === 0xF0) {
+    return parseStatusPacket(data);
+  }
+  return null;
+}
+
+/**
+ * Parse a 2-byte raw PPG packet.
+ */
+export function parseRawPPGPacket(data: Uint8Array): RawPPGPacket | null {
+  if (data.length < 2) {
+    return null;
+  }
+  const status = data[0];
+  const intensity = data[1];
+  const fingerPresent = status === 0x01;
+  return { type: 'raw', fingerPresent, intensity };
+}
+
+/**
+ * Parse a 13-byte status packet (0x3E header, 0xF0 trailer).
+ *
+ * Real byte layout from device captures:
+ *   [0]=0x3E  [1]=SpO2  [2]=reserved  [3]=BPM  [4]=reserved
+ *   [5]=PI×10  [6-11]=reserved  [12]=0xF0
+ */
+export function parseStatusPacket(data: Uint8Array): StatusPacket | null {
+  if (data.length < 13) {
+    return null;
+  }
+
+  const spo2Raw = data[1];
+  const bpm = data[3];
+  const piRaw = data[5];
+
+  // 127 (0x7F) or >100 means invalid / still searching
+  const spo2 = spo2Raw === 127 || spo2Raw > 100 ? -1 : spo2Raw;
+  const searching = spo2 === -1;
+  // Finger present if we're getting valid-ish readings
+  const fingerPresent = bpm > 0 || (spo2Raw > 0 && spo2Raw !== 127);
+  const perfusionIndex = piRaw / 10;
+
+  return {
+    type: 'status',
+    fingerPresent,
+    searching,
+    bpm,
+    spo2,
+    perfusionIndex,
+  };
+}
+
+// Legacy wrapper — parsePPGPacket returns the old PPGPacket shape for
+// backward compatibility with existing tests.
 export interface PPGPacket {
   fingerPresent: boolean;
   intensity: number; // 0-255
@@ -133,21 +242,20 @@ export function parsePPGPacket(data: Uint8Array): PPGPacket | null {
   if (data.length < 2) {
     return null;
   }
-
   const status = data[0];
   const intensity = data[1];
   const fingerPresent = status === 0x01;
-
   return { fingerPresent, intensity };
 }
 
 /**
  * Determine BLE mode from advertised service UUIDs.
- * Prefers raw PPG if both services are advertised (more data).
+ * Prefers raw PPG if Nordic UART service is advertised (more data).
  */
 export function detectBLEMode(serviceUUIDs: string[]): BLEMode {
   const lower = serviceUUIDs.map(s => s.toLowerCase());
-  if (lower.some(s => s.includes('fff0'))) {
+  // Check for Nordic UART service (full or short form)
+  if (lower.some(s => s.includes('6e400001') || s.includes('fff0'))) {
     return 'raw_ppg';
   }
   return 'standard_hr';
