@@ -6,7 +6,8 @@
  */
 import { useRef, useCallback, useState } from 'react';
 import type { DanceMatch } from '../../shared/types';
-import type { Session } from '../session/session-types';
+import type { Session, RawBeat } from '../session/session-types';
+import { RAW_BEAT_CAP } from '../session/session-types';
 
 interface SessionRecorderState {
   isRecording: boolean;
@@ -35,6 +36,7 @@ export function useSessionRecorder() {
     bpmAccum: number[];
     kappaAccum: number[];
     giniAccum: number[];
+    rawBeats: RawBeat[];
   } | null>(null);
 
   const startSession = useCallback(() => {
@@ -50,6 +52,7 @@ export function useSessionRecorder() {
       bpmAccum: [],
       kappaAccum: [],
       giniAccum: [],
+      rawBeats: [],
     };
     setRecState({
       isRecording: true,
@@ -60,10 +63,23 @@ export function useSessionRecorder() {
     });
   }, []);
 
-  const recordBeat = useCallback((danceMatch: DanceMatch | null) => {
+  const recordBeat = useCallback((danceMatch: DanceMatch | null, rawBeat?: Omit<RawBeat, 'dance' | 'confidence' | 'kappa' | 'gini' | 'spread'>) => {
     if (!sessionData.current) return;
 
     sessionData.current.beatCount++;
+
+    // Store per-beat raw data (capped)
+    if (rawBeat && sessionData.current.rawBeats.length < RAW_BEAT_CAP) {
+      const lastMatch = danceMatch ?? sessionData.current.danceMatches[sessionData.current.danceMatches.length - 1];
+      sessionData.current.rawBeats.push({
+        ...rawBeat,
+        kappa: lastMatch?.kappaMedian ?? 0,
+        gini: lastMatch?.gini ?? 0,
+        spread: lastMatch?.spread ?? 0,
+        dance: lastMatch?.name ?? 'Unknown',
+        confidence: lastMatch?.confidence ?? 0,
+      });
+    }
 
     if (danceMatch) {
       sessionData.current.danceMatches.push(danceMatch);
@@ -124,6 +140,7 @@ export function useSessionRecorder() {
         kappaMedian: medianKappa,
         giniMean: parseFloat(mean(sd.giniAccum).toFixed(3)),
       },
+      rawBeats: sd.rawBeats,
     };
 
     sessionData.current = null;

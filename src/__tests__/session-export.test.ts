@@ -5,7 +5,7 @@
  * use expo-file-system and expo-sharing (not available in Jest).
  */
 import { SessionExporter } from '../session/session-export';
-import type { Session } from '../session/session-types';
+import type { Session, RawBeat } from '../session/session-types';
 
 const MOCK_SESSION: Session = {
   id: 'test-session-1',
@@ -104,5 +104,115 @@ describe('SessionExporter', () => {
 
     const html = SessionExporter.toHTML(session);
     expect(html).toContain('No change events');
+  });
+});
+
+describe('SessionExporter.toRawCSV', () => {
+  const MOCK_RAW_BEATS: RawBeat[] = [
+    {
+      timestamp_ms: 1700000001000,
+      ppi_ms: 857,
+      source: 'ble_ppg',
+      raw_ppg: 142,
+      spo2: 98,
+      device_bpm: 70,
+      kappa: 7.7,
+      gini: 0.338,
+      spread: 0.33,
+      dance: 'The Waltz',
+      confidence: 0.92,
+      baseline_distance: 1.2,
+      trail_length: 18,
+    },
+    {
+      timestamp_ms: 1700000001857,
+      ppi_ms: 843,
+      source: 'ble_ppg',
+      raw_ppg: 155,
+      spo2: 97,
+      device_bpm: 71,
+      kappa: 7.7,
+      gini: 0.338,
+      spread: 0.33,
+      dance: 'The Waltz',
+      confidence: 0.92,
+      baseline_distance: null,
+      trail_length: 18,
+    },
+    {
+      timestamp_ms: 1700000002700,
+      ppi_ms: 800,
+      source: 'simulated',
+      raw_ppg: null,
+      spo2: null,
+      device_bpm: null,
+      kappa: 0,
+      gini: 0,
+      spread: 0,
+      dance: 'Unknown',
+      confidence: 0,
+      baseline_distance: null,
+      trail_length: 20,
+    },
+  ];
+
+  const SESSION_WITH_RAW: Session = {
+    ...MOCK_SESSION,
+    rawBeats: MOCK_RAW_BEATS,
+  };
+
+  test('generates correct CSV header', () => {
+    const csv = SessionExporter.toRawCSV(SESSION_WITH_RAW);
+    const lines = csv.split('\n');
+    expect(lines[0]).toBe(
+      'timestamp_ms,ppi_ms,source,raw_ppg,spo2,device_bpm,kappa,gini,spread,dance,confidence,baseline_distance,trail_length',
+    );
+  });
+
+  test('has one row per beat plus header', () => {
+    const csv = SessionExporter.toRawCSV(SESSION_WITH_RAW);
+    const lines = csv.split('\n');
+    expect(lines.length).toBe(4); // header + 3 beats
+  });
+
+  test('first data row contains correct values', () => {
+    const csv = SessionExporter.toRawCSV(SESSION_WITH_RAW);
+    const lines = csv.split('\n');
+    const fields = lines[1].split(',');
+    expect(fields[0]).toBe('1700000001000');  // timestamp_ms
+    expect(fields[1]).toBe('857');             // ppi_ms
+    expect(fields[2]).toBe('ble_ppg');         // source
+    expect(fields[3]).toBe('142');             // raw_ppg
+    expect(fields[4]).toBe('98');              // spo2
+    expect(fields[5]).toBe('70');              // device_bpm
+    expect(fields[6]).toBe('7.70');            // kappa
+    expect(fields[7]).toBe('0.3380');          // gini
+    expect(fields[8]).toBe('0.330');           // spread
+    expect(fields[9]).toBe('The Waltz');       // dance
+    expect(fields[10]).toBe('92.0');           // confidence
+    expect(fields[11]).toBe('1.2');            // baseline_distance
+    expect(fields[12]).toBe('18');             // trail_length
+  });
+
+  test('null values render as empty strings', () => {
+    const csv = SessionExporter.toRawCSV(SESSION_WITH_RAW);
+    const lines = csv.split('\n');
+    const fields = lines[3].split(','); // third beat (simulated, all nulls)
+    expect(fields[3]).toBe('');  // raw_ppg null
+    expect(fields[4]).toBe('');  // spo2 null
+    expect(fields[5]).toBe('');  // device_bpm null
+    expect(fields[11]).toBe(''); // baseline_distance null
+  });
+
+  test('handles session with no rawBeats', () => {
+    const csv = SessionExporter.toRawCSV(MOCK_SESSION);
+    const lines = csv.split('\n');
+    expect(lines.length).toBe(1); // header only
+  });
+
+  test('getRawFilename generates correct name', () => {
+    const name = SessionExporter.getRawFilename(MOCK_SESSION);
+    expect(name).toMatch(/^cardiac-dance-raw-.*\.csv$/);
+    expect(name).toContain('test-session-1');
   });
 });

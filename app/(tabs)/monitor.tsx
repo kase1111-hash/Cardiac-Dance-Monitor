@@ -92,8 +92,25 @@ export default function MonitorScreen() {
         sessionStarted.current = true;
       }
 
-      // Record beat for session
-      recordBeat(state.danceMatch);
+      // Build per-beat raw data for research export
+      const rawSource = sourceType === 'ble_innovo' ? 'ble_ppg' as const
+        : sourceType === 'camera' ? 'camera' as const
+        : sourceType === 'ble' ? 'ble_hr' as const
+        : 'simulated' as const;
+      const rawBeat = {
+        timestamp_ms: Date.now(),
+        ppi_ms: ppi,
+        source: rawSource,
+        raw_ppg: null as number | null,
+        spo2: (sourceType === 'ble_innovo' ? ble.spo2 : null) as number | null,
+        device_bpm: (sourceType === 'ble_innovo' ? ble.deviceBPM : null) as number | null,
+        baseline_distance: state.changeStatus.level !== 'learning'
+          ? state.changeStatus.mahalanobisDistance : null,
+        trail_length: state.trailLength,
+      };
+
+      // Record beat for session (with raw data)
+      recordBeat(state.danceMatch, rawBeat);
     }
   }, [latestBeat, pulseOx.latestPPI]); // eslint-disable-line react-hooks/exhaustive-deps
 

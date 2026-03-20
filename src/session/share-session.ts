@@ -33,6 +33,25 @@ export async function shareAsCSV(session: Session): Promise<void> {
 }
 
 /**
+ * Share session as per-beat raw CSV for research.
+ * Requires expo-file-system and expo-sharing at runtime.
+ */
+export async function shareAsRawCSV(session: Session): Promise<void> {
+  const FileSystem = await import('expo-file-system');
+  const Sharing = await import('expo-sharing');
+
+  const csv = SessionExporter.toRawCSV(session);
+  const filename = SessionExporter.getRawFilename(session);
+  const fileUri = `${FileSystem.cacheDirectory}${filename}`;
+
+  await FileSystem.writeAsStringAsync(fileUri, csv);
+  await Sharing.shareAsync(fileUri, {
+    mimeType: 'text/csv',
+    dialogTitle: 'Export Raw Beat Data',
+  });
+}
+
+/**
  * Share session as PDF.
  * Requires expo-print and expo-sharing at runtime.
  */
