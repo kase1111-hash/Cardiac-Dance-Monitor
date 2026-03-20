@@ -38,6 +38,15 @@ function angleToPixel(angle: number, size: number, padding: number): number {
 }
 
 export function TorusDisplay({ points, danceName, size }: Props) {
+  // Diagnostic: prove the component receives all points every beat
+  const latest = points.length > 0 ? points[points.length - 1] : null;
+  if (latest) {
+    console.log(
+      `TORUS_RENDER pts=${points.length} latest=#${latest.beatIndex}` +
+      ` θ1=${latest.theta1.toFixed(2)} θ2=${latest.theta2.toFixed(2)}`,
+    );
+  }
+
   const color = getDanceColor(danceName);
   const padding = 24;
   const inner = size - 2 * padding;
@@ -65,11 +74,6 @@ export function TorusDisplay({ points, danceName, size }: Props) {
       return `${x},${y}`;
     })
     .join(' ');
-
-  // Latest point info
-  const latest = points.length > 0 ? points[points.length - 1] : null;
-  const latestX = latest ? angleToPixel(latest.theta1, size, padding) : 0;
-  const latestY = latest ? angleToPixel(latest.theta2, size, padding) : 0;
 
   // Beat count from latest point's beatIndex
   const beatCount = latest?.beatIndex ?? 0;
@@ -212,13 +216,20 @@ export function TorusDisplay({ points, danceName, size }: Props) {
           {'RR(n+1) \u2192'}
         </SvgText>
 
-        {/* Beat counter — top-right corner */}
+        {/* Beat counter + point count — top-right corner */}
         <SvgText
-          x={size - padding - 4} y={padding + 14}
-          fill="#475569" fontSize={11}
+          x={size - padding - 4} y={padding + 16}
+          fill="#94a3b8" fontSize={14} fontWeight="bold"
           textAnchor="end" fontFamily="monospace"
         >
           {`#${beatCount}`}
+        </SvgText>
+        <SvgText
+          x={size - padding - 4} y={padding + 30}
+          fill="#475569" fontSize={10}
+          textAnchor="end" fontFamily="monospace"
+        >
+          {`${points.length} pts`}
         </SvgText>
       </Svg>
     </View>
