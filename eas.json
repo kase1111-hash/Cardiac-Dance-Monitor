@@ -9,17 +9,21 @@
       "distribution": "internal",
       "android": {
         "buildType": "apk",
-        "image": "latest"
+        "image": "sdk-52"
       }
     },
     "preview": {
       "distribution": "internal",
       "android": {
-        "buildType": "apk"
+        "buildType": "apk",
+        "image": "sdk-52"
       }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "android": {
+        "image": "sdk-52"
+      }
     }
   },
   "submit": {
