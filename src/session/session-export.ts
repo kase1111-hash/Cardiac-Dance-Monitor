@@ -8,7 +8,7 @@
  * File operations (expo-file-system, expo-sharing, expo-print)
  * are handled by the UI layer, not this module.
  */
-import type { Session } from './session-types';
+import type { Session, RawBeat } from './session-types';
 
 function formatTimestamp(ms: number): string {
   return new Date(ms).toISOString();
@@ -190,9 +190,47 @@ export class SessionExporter {
   }
 
   /**
+   * Generate per-beat raw CSV for research export.
+   * One row per detected beat with all available metrics.
+   */
+  static toRawCSV(session: Session): string {
+    const lines: string[] = [];
+    const header = 'timestamp_ms,ppi_ms,source,raw_ppg,spo2,device_bpm,kappa,gini,spread,dance,confidence,baseline_distance,trail_length';
+    lines.push(header);
+
+    const beats = session.rawBeats ?? [];
+    for (const b of beats) {
+      lines.push([
+        b.timestamp_ms,
+        b.ppi_ms,
+        b.source,
+        b.raw_ppg ?? '',
+        b.spo2 ?? '',
+        b.device_bpm ?? '',
+        b.kappa.toFixed(2),
+        b.gini.toFixed(4),
+        b.spread.toFixed(3),
+        b.dance,
+        (b.confidence * 100).toFixed(1),
+        b.baseline_distance ?? '',
+        b.trail_length,
+      ].join(','));
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
    * Generate a safe filename for export.
    */
   static getFilename(session: Session, ext: 'csv' | 'pdf'): string {
     return `cardiac-dance-${session.id}.${ext}`;
+  }
+
+  /**
+   * Generate a safe filename for raw data export.
+   */
+  static getRawFilename(session: Session): string {
+    return `cardiac-dance-raw-${session.id}.csv`;
   }
 }

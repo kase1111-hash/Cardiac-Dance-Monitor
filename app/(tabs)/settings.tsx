@@ -11,6 +11,8 @@ import {
 } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { useDataSource } from '../../src/context/data-source-context';
+import { sessionStore } from '../../src/session/session-store-instance';
+import { shareAsRawCSV } from '../../src/session/share-session';
 import type { RhythmScenario } from '../../shared/simulator';
 
 const SCENARIOS: Array<{ id: RhythmScenario; label: string; description: string }> = [
@@ -42,6 +44,24 @@ export default function SettingsScreen() {
         },
       ],
     );
+  }, []);
+
+  const handleExportRawData = useCallback(async () => {
+    try {
+      const sessions = await sessionStore.getSessions();
+      if (sessions.length === 0) {
+        Alert.alert('No Sessions', 'Record a session first by connecting a data source on the Monitor tab.');
+        return;
+      }
+      const latest = sessions[0];
+      if (!latest.rawBeats || latest.rawBeats.length === 0) {
+        Alert.alert('No Raw Data', 'The most recent session has no per-beat data. Raw data recording requires a newer session.');
+        return;
+      }
+      await shareAsRawCSV(latest);
+    } catch (e: any) {
+      Alert.alert('Export Error', e.message ?? 'Unknown error');
+    }
   }, []);
 
   const handleAboutLongPress = useCallback(() => {
@@ -181,6 +201,12 @@ export default function SettingsScreen() {
           Export individual sessions from the History tab. Tap a session to view details,
           then use the share button to export as CSV or PDF.
         </Text>
+        <TouchableOpacity style={[styles.actionRow, { marginTop: 8 }]} onPress={handleExportRawData}>
+          <Text style={styles.actionLabel}>Export Raw Data</Text>
+          <Text style={styles.actionDesc}>
+            Per-beat CSV with PPI, SpO2, dance metrics, and baseline distance (most recent session)
+          </Text>
+        </TouchableOpacity>
 
         {/* Dev mode features (hidden) */}
         {devMode && (
