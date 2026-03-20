@@ -85,31 +85,46 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
   // Adaptive normalization bounds
   const adaptiveMin = useRef(PPI_MIN);
   const adaptiveMax = useRef(PPI_MAX);
-  const beatsSinceAdaptiveUpdate = useRef(0);
 
   const processPPI = useCallback((ppi: number) => {
     console.log('PIPELINE_BEAT', totalBeats.current + 1, 'ppi=', ppi);
     ppiBuffer.current.push(ppi);
     if (ppiBuffer.current.length > TORUS_WINDOW) ppiBuffer.current.shift();
     totalBeats.current++;
-    beatsSinceAdaptiveUpdate.current++;
 
     const buf = ppiBuffer.current;
     if (buf.length < 2) return;
 
-    // Update adaptive normalization every 10 beats
-    if (beatsSinceAdaptiveUpdate.current >= 10) {
+    // Update adaptive normalization EVERY beat for smooth visual transitions.
+    // Without per-beat updates, NSR integer PPIs (780 vs 781) map to positions
+    // only ~2px apart, making 60 dots look like ~15 blobs.
+    {
       const sorted = [...buf].sort((a, b) => a - b);
-      adaptiveMin.current = sorted[Math.floor(sorted.length * 0.02)];
-      adaptiveMax.current = sorted[Math.floor(sorted.length * 0.98)];
-      beatsSinceAdaptiveUpdate.current = 0;
+      const newMin = sorted[Math.max(0, Math.floor(sorted.length * 0.02))];
+      const newMax = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.98))];
+      adaptiveMin.current = newMin;
+      adaptiveMax.current = newMax;
     }
 
     const n = buf.length;
+
+    // Re-map ALL existing display points with current adaptive bounds.
+    // This prevents stale normalization from the first few beats causing
+    // permanent clustering. All points stay in sync with the latest bounds.
+    for (let i = 0; i < displayPoints.current.length; i++) {
+      const dp = displayPoints.current[i];
+      const ppiIdx = buf.length - displayPoints.current.length + i;
+      if (ppiIdx >= 0 && ppiIdx < buf.length) {
+        const prevIdx = Math.max(0, ppiIdx - 1);
+        dp.theta1 = toAngle(buf[prevIdx], adaptiveMin.current, adaptiveMax.current);
+        dp.theta2 = toAngle(buf[ppiIdx], adaptiveMin.current, adaptiveMax.current);
+      }
+    }
+
     const prevPPI = buf[n - 2];
     const currPPI = buf[n - 1];
 
-    // DISPLAY points (adaptive normalization)
+    // DISPLAY points (adaptive normalization) — new point for this beat
     const dTheta1 = toAngle(prevPPI, adaptiveMin.current, adaptiveMax.current);
     const dTheta2 = toAngle(currPPI, adaptiveMin.current, adaptiveMax.current);
     displayPoints.current.push({
@@ -218,7 +233,6 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
     displayPoints.current = [];
     featurePoints.current = [];
     totalBeats.current = 0;
-    beatsSinceAdaptiveUpdate.current = 0;
     adaptiveMin.current = PPI_MIN;
     adaptiveMax.current = PPI_MAX;
     changeDetector.current.reset();
