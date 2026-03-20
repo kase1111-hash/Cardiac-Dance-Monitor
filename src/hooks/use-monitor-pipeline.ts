@@ -141,62 +141,61 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
       }
     }
 
-    // Feature computation + dance matching every DANCE_UPDATE_INTERVAL beats
-    const shouldUpdate = totalBeats.current % DANCE_UPDATE_INTERVAL === 0;
+    // BPM + torus display update on EVERY beat
+    const currentBpm = buf.length >= 2 ? Math.round(60000 / mean(buf)) : null;
+    let perBeatUpdate: Partial<PipelineState> = {
+      displayPoints: [...displayPoints.current],
+      bpm: currentBpm,
+      totalBeats: totalBeats.current,
+      isDancing: totalBeats.current >= 10,
+    };
+
+    // Dance identification + features every DANCE_UPDATE_INTERVAL beats
+    const shouldMatchDance = totalBeats.current % DANCE_UPDATE_INTERVAL === 0;
     const hasEnoughData = kappaBuffer.current.length >= 10;
 
-    if (shouldUpdate && hasEnoughData) {
+    if (shouldMatchDance && hasEnoughData) {
       const positiveKappas = kappaBuffer.current.filter(k => k > 0);
-      if (positiveKappas.length < 2) return;
+      if (positiveKappas.length >= 2) {
+        const km = median(positiveKappas);
+        const g = giniCoefficient(positiveKappas);
+        const fPoints = featurePoints.current;
+        const t1s = fPoints.map(p => p.theta1);
+        const t2s = fPoints.map(p => p.theta2);
+        const s = std(t1s) + std(t2s);
 
-      const km = median(positiveKappas);
-      const g = giniCoefficient(positiveKappas);
-      const fPoints = featurePoints.current;
-      const t1s = fPoints.map(p => p.theta1);
-      const t2s = fPoints.map(p => p.theta2);
-      const s = std(t1s) + std(t2s);
-      const currentBpm = Math.round(60000 / mean(buf));
+        const match = matchDance(km, g, s);
+        match.bpm = currentBpm ?? 0;
 
-      const match = matchDance(km, g, s);
-      match.bpm = currentBpm;
+        // Baseline learning
+        const bs = baselineService.current;
+        if (bs.isLearning()) {
+          bs.addSample(km, g, s, currentBpm ?? 0);
+        }
 
-      // Baseline learning: feed features
-      const bs = baselineService.current;
-      if (bs.isLearning()) {
-        bs.addSample(km, g, s, currentBpm);
+        // Change detection
+        const baseline = bs.getBaseline();
+        const changeStatus = changeDetector.current.update(
+          baseline, { kappa: km, gini: g, spread: s },
+        );
+
+        perBeatUpdate = {
+          ...perBeatUpdate,
+          danceMatch: match,
+          kappaMedian: km,
+          gini: g,
+          spread: s,
+          isDancing: true,
+          changeStatus,
+          changeLevel: changeStatus.level as ChangeLevel,
+          baselineLearningProgress: bs.getLearningProgress(),
+          isLearningBaseline: bs.isLearning(),
+          baselineBeatCount: bs.getSampleCount(),
+        };
       }
-
-      // Change detection: compute if baseline exists
-      const baseline = bs.getBaseline();
-      const changeStatus = changeDetector.current.update(
-        baseline, { kappa: km, gini: g, spread: s },
-      );
-
-      setState({
-        displayPoints: [...displayPoints.current],
-        danceMatch: match,
-        bpm: currentBpm,
-        kappaMedian: km,
-        gini: g,
-        spread: s,
-        totalBeats: totalBeats.current,
-        isDancing: true,
-        changeStatus,
-        changeLevel: changeStatus.level as ChangeLevel,
-        baselineLearningProgress: bs.getLearningProgress(),
-        isLearningBaseline: bs.isLearning(),
-        baselineBeatCount: bs.getSampleCount(),
-      });
-    } else {
-      const currentBpm = buf.length >= 2 ? Math.round(60000 / mean(buf)) : null;
-      setState(prev => ({
-        ...prev,
-        displayPoints: [...displayPoints.current],
-        bpm: currentBpm,
-        totalBeats: totalBeats.current,
-        isDancing: totalBeats.current >= 10,
-      }));
     }
+
+    setState(prev => ({ ...prev, ...perBeatUpdate }))
   }, []);
 
   const reset = useCallback(() => {
