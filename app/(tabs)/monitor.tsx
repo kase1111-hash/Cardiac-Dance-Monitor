@@ -48,13 +48,6 @@ export default function MonitorScreen() {
     }
   }, [sourceType]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-connect simulated when selected
-  useEffect(() => {
-    if (sourceType === 'simulated' && simulated.connectionStatus === 'disconnected') {
-      simulated.connect('simulated');
-    }
-  }, [sourceType]); // eslint-disable-line react-hooks/exhaustive-deps
-
   const handleCameraFrame = useCallback((redMean: number, timestampMs: number) => {
     camera.processFrame(redMean, timestampMs);
   }, [camera]);
