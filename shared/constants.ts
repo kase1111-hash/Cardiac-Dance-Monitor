@@ -13,13 +13,16 @@ export const TORUS_WINDOW = 60;      // beats in rolling window
 export const KAPPA_WINDOW = 60;      // beats for κ median/Gini computation
 export const DANCE_UPDATE_INTERVAL = 10; // beats between dance re-identification
 
-// Dance centroids (empirical, from Paper IV)
+// Dance centroids — calibrated against the fixed-normalization pipeline.
+// Derived from 10 trials × 200 beats per scenario through the actual
+// toAngle(PPI_MIN, PPI_MAX) → mengerCurvature → gini/spread pipeline.
+// Original Paper IV centroids used different normalization bounds.
 export const DANCE_CENTROIDS = [
-  { name: 'The Waltz',     clinical: 'NSR', kappa: 10.7, gini: 0.391, spread: 1.0 },
-  { name: 'The Lock-Step', clinical: 'CHF', kappa: 24.0, gini: 0.353, spread: 0.4 },
-  { name: 'The Sway',      clinical: 'SVA', kappa: 7.6,  gini: 0.510, spread: 1.2 },
-  { name: 'The Mosh Pit',  clinical: 'AF',  kappa: 3.3,  gini: 0.512, spread: 2.0 },
-  { name: 'The Stumble',   clinical: 'VA',  kappa: 1.2,  gini: 0.567, spread: 2.5 },
+  { name: 'The Waltz',     clinical: 'NSR', kappa: 7.7,  gini: 0.338, spread: 0.33 },
+  { name: 'The Lock-Step', clinical: 'CHF', kappa: 33.3, gini: 0.306, spread: 0.04 },
+  { name: 'The Sway',      clinical: 'SVA', kappa: 4.0,  gini: 0.400, spread: 1.0  },
+  { name: 'The Mosh Pit',  clinical: 'AF',  kappa: 0.7,  gini: 0.305, spread: 2.35 },
+  { name: 'The Stumble',   clinical: 'VA',  kappa: 0.5,  gini: 0.720, spread: 3.30 },
 ] as const;
 
 // Normalization scales for distance computation
