@@ -88,6 +88,7 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
   const beatsSinceAdaptiveUpdate = useRef(0);
 
   const processPPI = useCallback((ppi: number) => {
+    console.log('PIPELINE_BEAT', totalBeats.current + 1, 'ppi=', ppi);
     ppiBuffer.current.push(ppi);
     if (ppiBuffer.current.length > TORUS_WINDOW) ppiBuffer.current.shift();
     totalBeats.current++;
@@ -200,6 +201,7 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
       }
     }
 
+    console.log('SET_STATE beat=', totalBeats.current, 'pts=', (perBeatUpdate.displayPoints ?? []).length);
     setState(prev => ({ ...prev, ...perBeatUpdate }))
   }, []);
 

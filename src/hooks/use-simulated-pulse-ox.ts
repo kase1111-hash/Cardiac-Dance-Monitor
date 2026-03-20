@@ -15,20 +15,29 @@ import { RhythmSimulator, type RhythmScenario } from '../../shared/simulator';
 import { PPI_MIN, PPI_MAX } from '../../shared/constants';
 import type { PulseOxInterface, ConnectionStatus, SignalQuality } from '../ble/ble-service';
 
+/** A PPI beat with a unique sequence number so React always sees a change. */
+export interface PPIBeat {
+  ppi: number;
+  seq: number;
+}
+
 export function useSimulatedPulseOx(
   scenario: RhythmScenario = 'nsr',
   autoStart: boolean = true,
 ): PulseOxInterface & {
   setScenario: (s: RhythmScenario) => void;
+  latestBeat: PPIBeat | null;
 } {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [latestPPI, setLatestPPI] = useState<number | null>(null);
+  const [latestBeat, setLatestBeat] = useState<PPIBeat | null>(null);
   const [signalQuality, setSignalQuality] = useState<SignalQuality>('disconnected');
 
   // All mutable state in refs — no stale closures
   const simulatorRef = useRef(new RhythmSimulator({ scenario }));
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
+  const seqRef = useRef(0);
 
   // Track scenario prop for display
   const scenarioRef = useRef(scenario);
@@ -43,7 +52,10 @@ export function useSimulatedPulseOx(
     const inRange = ppi >= PPI_MIN && ppi <= PPI_MAX;
 
     if (inRange) {
+      seqRef.current++;
+      console.log('PPI_RECEIVED', ppi, 'seq=', seqRef.current);
       setLatestPPI(ppi);
+      setLatestBeat({ ppi, seq: seqRef.current });
       setSignalQuality('good');
     }
     // Out-of-range beats still schedule the next tick but don't emit
@@ -72,6 +84,8 @@ export function useSimulatedPulseOx(
     setConnectionStatus('disconnected');
     setSignalQuality('disconnected');
     setLatestPPI(null);
+    setLatestBeat(null);
+    seqRef.current = 0;
   }, []);
 
   const setScenario = useCallback((s: RhythmScenario) => {
@@ -117,6 +131,7 @@ export function useSimulatedPulseOx(
     disconnect: stop,
     connectionStatus,
     latestPPI,
+    latestBeat,
     signalQuality,
     sourceName: `Simulated (${scenario.toUpperCase()})`,
     setScenario,

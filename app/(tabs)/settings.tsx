@@ -7,8 +7,9 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, TouchableOpacity, ScrollView,
-  Alert,
+  Alert, Platform,
 } from 'react-native';
+import Slider from '@react-native-community/slider';
 import { useDataSource } from '../../src/context/data-source-context';
 import type { RhythmScenario } from '../../shared/simulator';
 
@@ -21,7 +22,7 @@ const SCENARIOS: Array<{ id: RhythmScenario; label: string; description: string 
 ];
 
 export default function SettingsScreen() {
-  const { sourceType, setSourceType, simulatedScenario, setSimulatedScenario } = useDataSource();
+  const { sourceType, setSourceType, simulatedScenario, setSimulatedScenario, filterSensitivity, setFilterSensitivity } = useDataSource();
   const [devMode, setDevMode] = useState(false);
   const [ppgValidation, setPPGValidation] = useState(false);
 
@@ -127,6 +128,35 @@ export default function SettingsScreen() {
             Clear learned rhythm pattern and start fresh
           </Text>
         </TouchableOpacity>
+
+        {/* Signal filter sensitivity slider */}
+        <Text style={styles.sectionHeader}>Signal Filter Sensitivity</Text>
+        <View style={styles.sliderContainer}>
+          <View style={styles.sliderHeader}>
+            <Text style={styles.sliderLabel}>
+              {Math.round(filterSensitivity * 100)}%
+            </Text>
+            <Text style={styles.sliderHint}>
+              {filterSensitivity === 0 ? 'Accept all' : filterSensitivity < 0.3 ? 'Permissive' : filterSensitivity < 0.6 ? 'Moderate' : 'Strict'}
+            </Text>
+          </View>
+          <Slider
+            style={{ width: '100%', height: 40 }}
+            minimumValue={0}
+            maximumValue={1}
+            step={0.05}
+            value={filterSensitivity}
+            onValueChange={setFilterSensitivity}
+            minimumTrackTintColor="#22c55e"
+            maximumTrackTintColor="#1a1a2e"
+            thumbTintColor="#22c55e"
+          />
+          <Text style={styles.sliderDesc}>
+            Controls how aggressively noisy beats are rejected.
+            0% = accept everything (best for simulation).
+            40% = recommended for real hardware.
+          </Text>
+        </View>
 
         {/* Export */}
         <Text style={styles.sectionHeader}>Export</Text>
@@ -286,5 +316,34 @@ const styles = StyleSheet.create({
     color: '#64748b',
     fontSize: 13,
     lineHeight: 20,
+  },
+  sliderContainer: {
+    backgroundColor: '#0a0a1a',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1a1a2e',
+    padding: 16,
+  },
+  sliderHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  sliderLabel: {
+    color: '#22c55e',
+    fontSize: 24,
+    fontWeight: '700',
+    fontFamily: 'monospace',
+  },
+  sliderHint: {
+    color: '#64748b',
+    fontSize: 13,
+  },
+  sliderDesc: {
+    color: '#475569',
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 4,
   },
 });

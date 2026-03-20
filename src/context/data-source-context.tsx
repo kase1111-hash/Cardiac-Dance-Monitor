@@ -12,6 +12,9 @@ interface DataSourceContextValue {
   setSourceType: (t: DataSourceType) => void;
   simulatedScenario: RhythmScenario;
   setSimulatedScenario: (s: RhythmScenario) => void;
+  /** Signal filter sensitivity: 0 = accept all, 1.0 = strict (40% deviation rejection) */
+  filterSensitivity: number;
+  setFilterSensitivity: (v: number) => void;
 }
 
 const DataSourceContext = createContext<DataSourceContextValue>({
@@ -19,18 +22,30 @@ const DataSourceContext = createContext<DataSourceContextValue>({
   setSourceType: () => {},
   simulatedScenario: 'nsr',
   setSimulatedScenario: () => {},
+  filterSensitivity: 0,
+  setFilterSensitivity: () => {},
 });
 
 export function DataSourceProvider({ children }: { children: ReactNode }) {
   const [sourceType, setSourceType] = useState<DataSourceType>('simulated');
   const [simulatedScenario, setSimulatedScenario] = useState<RhythmScenario>('nsr');
+  const [filterSensitivity, setFilterSensitivity] = useState(0);
+
+  // Auto-set default sensitivity when source changes
+  const handleSetSourceType = (t: DataSourceType) => {
+    setSourceType(t);
+    // Default: 0% for simulated, 40% for BLE/camera
+    setFilterSensitivity(t === 'simulated' ? 0 : 0.4);
+  };
 
   return (
     <DataSourceContext.Provider value={{
       sourceType,
-      setSourceType,
+      setSourceType: handleSetSourceType,
       simulatedScenario,
       setSimulatedScenario,
+      filterSensitivity,
+      setFilterSensitivity,
     }}>
       {children}
     </DataSourceContext.Provider>
