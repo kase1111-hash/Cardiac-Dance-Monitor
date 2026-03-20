@@ -7,14 +7,11 @@ import {
   View, Text, StyleSheet, SafeAreaView, FlatList, TouchableOpacity, Alert,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
-import { SessionStore, MemoryStorage } from '../../src/session/session-store';
+import { sessionStore } from '../../src/session/session-store-instance';
 import type { Session } from '../../src/session/session-types';
 import { getDanceColor, getDanceEmoji } from '../../shared/dance-colors';
 
-// In production, this would use AsyncStorage. For now, use a shared instance.
-// TODO: Replace with AsyncStorage adapter when integrating
-const store = new SessionStore(new MemoryStorage());
-export { store as sessionStore };
+const store = sessionStore;
 
 function formatDuration(ms: number): string {
   const totalSec = Math.floor(ms / 1000);

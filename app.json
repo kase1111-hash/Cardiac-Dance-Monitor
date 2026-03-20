@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "Cardiac Dance Monitor",
+    "slug": "cardiac-dance-monitor",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "cardiac-dance-monitor",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.cardiacdance.monitor",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camera is used to detect your pulse via fingertip PPG"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#05050a"
+      },
+      "package": "com.cardiacdance.monitor",
+      "permissions": ["android.permission.CAMERA"]
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Camera is used to detect your pulse via fingertip PPG"
+        }
+      ]
+    ]
+  }
+}
