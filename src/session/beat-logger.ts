@@ -24,9 +24,12 @@ export interface BeatLogRow {
   theta1: number;
   theta2: number;
   trail_length: number;
+  motion_artifact: boolean;
+  breath_rate: number | null;
+  ibi_ms: number | null;
 }
 
-const CSV_HEADER = 'timestamp,beat_number,ppi_ms,source,spo2,bpm,pi_percent,dance_name,dance_confidence,kappa,gini,sigma,theta1,theta2,trail_length';
+const CSV_HEADER = 'timestamp,beat_number,ppi_ms,source,spo2,bpm,pi_percent,dance_name,dance_confidence,kappa,gini,sigma,theta1,theta2,trail_length,motion_artifact,breath_rate,ibi_ms';
 
 class BeatLogger {
   private rows: BeatLogRow[] = [];
@@ -62,6 +65,9 @@ class BeatLogger {
         r.theta1.toFixed(4),
         r.theta2.toFixed(4),
         r.trail_length,
+        r.motion_artifact,
+        r.breath_rate ?? '',
+        r.ibi_ms ?? '',
       ].join(','));
     }
     return lines.join('\n') + '\n';
