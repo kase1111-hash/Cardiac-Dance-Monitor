@@ -21,7 +21,7 @@
  * We sample R at offset 0 on Android (RGBA) and offset 2 on iOS (BGRA),
  * but for robustness we just take max(byte0, byte2) which covers both.
  */
-import React, { useCallback } from 'react';
+import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, Platform } from 'react-native';
 import {
   Camera,
@@ -58,6 +58,7 @@ export function CameraPPGView({ onFrame, active, ppgState, peakCount }: Props) {
     { fps: 30 },
     { videoResolution: { width: 320, height: 240 } },
   ]);
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   // Bridge from worklet thread → JS thread
   const handleRedMean = useRunOnJS((redMean: number, timestamp: number) => {
@@ -145,6 +146,15 @@ export function CameraPPGView({ onFrame, active, ppgState, peakCount }: Props) {
     return null;
   }
 
+  if (cameraError) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.text}>Camera not available on this device</Text>
+        <Text style={styles.subtext}>{cameraError}</Text>
+      </View>
+    );
+  }
+
   const overlayText = ppgState === 'detecting'
     ? `Detecting pulse... (${peakCount}/5 peaks)`
     : ppgState === 'recording'
@@ -163,6 +173,10 @@ export function CameraPPGView({ onFrame, active, ppgState, peakCount }: Props) {
         pixelFormat="rgb"
         frameProcessor={frameProcessor}
         preview={false}
+        onError={(error) => {
+          console.warn('CAMERA_ERROR:', error.message);
+          setCameraError(error.message);
+        }}
       />
       <View style={styles.overlay}>
         <Text style={styles.instruction}>
