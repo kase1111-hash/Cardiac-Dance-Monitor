@@ -247,15 +247,49 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
           console.log('BLE_CONNECT: connecting to ' + device.id);
           const connected = await device.connect({ timeout: 10000 });
           console.log('BLE_CONNECT: connected, discovering services...');
-          await connected.discoverAllServicesAndCharacteristics();
-          deviceRef.current = connected;
+          const discovered = await connected.discoverAllServicesAndCharacteristics();
+          deviceRef.current = discovered;
+
+          // Log all discovered services and characteristics
+          try {
+            const services = await discovered.services();
+            console.log('BLE_DISCOVERY: found ' + services.length + ' services');
+            for (const svc of services) {
+              console.log('BLE_DISCOVERY:   service=' + svc.uuid);
+              const chars = await svc.characteristics();
+              for (const ch of chars) {
+                console.log('BLE_DISCOVERY:     char=' + ch.uuid + ' notify=' + ch.isNotifiable + ' indicate=' + ch.isIndicatable + ' read=' + ch.isReadable + ' write=' + ch.isWritableWithResponse);
+              }
+            }
+          } catch (discErr: any) {
+            console.log('BLE_DISCOVERY: enumeration failed: ' + discErr.message);
+          }
+
+          // Try to enable notifications via CCCD descriptor (0x2902)
+          // Some devices require writing [0x01, 0x00] before notifications flow
+          const CCCD_UUID = '00002902-0000-1000-8000-00805f9b34fb';
+          try {
+            console.log('BLE_CCCD: writing enable-notifications to descriptor ' + CCCD_UUID);
+            // Encode [0x01, 0x00] as base64 = "AQAA" (but we need "AQA=" for 2 bytes)
+            const enableNotifBase64 = bytesToBase64(new Uint8Array([0x01, 0x00]));
+            await discovered.writeDescriptorForService(
+              NORDIC_UART_SERVICE_UUID,
+              INNOVO_PPG_CHARACTERISTIC_UUID,
+              CCCD_UUID,
+              enableNotifBase64,
+            );
+            console.log('BLE_CCCD: write succeeded');
+          } catch (cccdErr: any) {
+            console.log('BLE_CCCD: write failed (may be OK if auto-enabled): ' + cccdErr.message);
+          }
 
           // Subscribe to 0xFFF1 notifications
-          console.log('BLE_SUBSCRIBE: subscribing to ' + INNOVO_PPG_CHARACTERISTIC_UUID);
-          subscriptionRef.current = connected.monitorCharacteristicForService(
+          console.log('BLE_SUBSCRIBE: calling monitorCharacteristicForService(' + NORDIC_UART_SERVICE_UUID + ', ' + INNOVO_PPG_CHARACTERISTIC_UUID + ')');
+          subscriptionRef.current = discovered.monitorCharacteristicForService(
             NORDIC_UART_SERVICE_UUID,
             INNOVO_PPG_CHARACTERISTIC_UUID,
             (err: any, characteristic: any) => {
+              console.log('BLE_NOTIFY: callback fired', 'error=' + (err?.message || 'none'), 'value=' + (characteristic?.value || 'null'));
               if (err) {
                 console.log('BLE_ERROR: notification error: ' + err.message);
                 return;
@@ -272,6 +306,43 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
               handler.current.handleNotification(bytes, Date.now());
             },
           );
+          console.log('BLE_MONITOR: subscription created');
+
+          // Also try subscribing under FFF0 service in case FFF1 lives there
+          // (some Innovo firmware puts FFF1 under service FFF0, not Nordic UART)
+          const FFF0_SERVICE_UUID = '0000fff0-0000-1000-8000-00805f9b34fb';
+          try {
+            console.log('BLE_SUBSCRIBE_ALT: trying FFF1 under FFF0 service...');
+            const altSub = discovered.monitorCharacteristicForService(
+              FFF0_SERVICE_UUID,
+              INNOVO_PPG_CHARACTERISTIC_UUID,
+              (err: any, characteristic: any) => {
+                console.log('BLE_NOTIFY_ALT: callback fired (FFF0 service)', 'error=' + (err?.message || 'none'), 'value=' + (characteristic?.value || 'null'));
+                if (err) return;
+                if (!characteristic?.value) return;
+
+                if (firstNotification) {
+                  console.log('BLE_SUBSCRIBE_ALT: active — first notification via FFF0 service');
+                  firstNotification = false;
+                }
+
+                const bytes = base64ToBytes(characteristic.value);
+                console.log('BLE_RAW', bytes.length, 'bytes:', Array.from(bytes));
+                handler.current.handleNotification(bytes, Date.now());
+              },
+            );
+            console.log('BLE_SUBSCRIBE_ALT: FFF0 subscription created');
+            // Store alt subscription for cleanup
+            const origSub = subscriptionRef.current;
+            subscriptionRef.current = {
+              remove: () => {
+                origSub?.remove();
+                altSub?.remove();
+              },
+            };
+          } catch (altErr: any) {
+            console.log('BLE_SUBSCRIBE_ALT: FFF0 service not found (expected if FFF1 is under Nordic UART): ' + altErr.message);
+          }
 
           console.log('BLE_CONNECT: fully connected and subscribed');
           setConnectionStatus('connected');
@@ -346,6 +417,18 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     scanning,
     bleUnavailableReason: BleManagerClass ? null : (bleLoadError || 'BLE module not loaded'),
   };
+}
+
+/** Encode Uint8Array to base64 string (for BLE-PLX descriptor writes). */
+function bytesToBase64(bytes: Uint8Array): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes).toString('base64');
+  }
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }
 
 /** Decode base64 string (from BLE-PLX) to Uint8Array. */
