@@ -10,10 +10,13 @@
  *     → byte[1]=SpO2%, byte[3]=BPM, byte[5]=Perfusion Index
  *
  * Exposes PulseOxInterface + SpO2/PI for the monitor pipeline.
+ *
+ * IMPORTANT: react-native-ble-plx is loaded via try-catch require() so the
+ * app starts cleanly even if the native module is missing or crashes (Expo Go,
+ * device policy, etc.). BLE features degrade gracefully to "BLE not available".
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Platform, PermissionsAndroid, Alert } from 'react-native';
-import { BleManager, type Device, type Subscription } from 'react-native-ble-plx';
 import { BLEPPGHandler, INNOVO_PPG_SAMPLE_RATE } from './ble-ppg-handler';
 import { QualityGate } from '../../shared/quality-gate';
 import type {
@@ -28,18 +31,40 @@ import {
   INNOVO_DEVICE_NAME,
 } from './ble-service';
 
+// --- Safe BLE module loading ---
+// react-native-ble-plx crashes at module level with "Cannot read property
+// 'createClient' of null" on Expo Go and some device configurations.
+// Wrap in try-catch so the rest of the app keeps working.
+let BleManagerClass: any = null;
+let bleLoadError: string | null = null;
+
+try {
+  BleManagerClass = require('react-native-ble-plx').BleManager;
+} catch (e: any) {
+  bleLoadError = e?.message || 'react-native-ble-plx not available';
+  console.warn('BLE_LOAD_FAILED:', bleLoadError);
+}
+
 export interface InnovoPulseOxResult extends PulseOxInterface {
   spo2: number | null;
   perfusionIndex: number | null;
   deviceBPM: number | null;
   scanning: boolean;
+  /** If BLE native module failed to load, this contains the error message */
+  bleUnavailableReason: string | null;
 }
 
 // Singleton BleManager — must not be recreated per render
-let sharedManager: BleManager | null = null;
-function getManager(): BleManager {
+let sharedManager: any = null;
+function getManager(): any | null {
+  if (!BleManagerClass) return null;
   if (!sharedManager) {
-    sharedManager = new BleManager();
+    try {
+      sharedManager = new BleManagerClass();
+    } catch (e: any) {
+      console.warn('BLE_MANAGER_CREATE_FAILED:', e?.message);
+      return null;
+    }
   }
   return sharedManager;
 }
@@ -101,8 +126,8 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
 
   const handler = useRef(new BLEPPGHandler(INNOVO_PPG_SAMPLE_RATE));
   const qualityGate = useRef(new QualityGate());
-  const subscriptionRef = useRef<Subscription | null>(null);
-  const deviceRef = useRef<Device | null>(null);
+  const subscriptionRef = useRef<any>(null);
+  const deviceRef = useRef<any>(null);
   const activeRef = useRef(false);
 
   const wireHandler = useCallback(() => {
@@ -130,6 +155,17 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
   const connect = useCallback(async (_deviceId?: string) => {
     if (activeRef.current) return;
 
+    // Check if BLE native module is available
+    const manager = getManager();
+    if (!manager) {
+      console.warn('BLE_CONNECT_BLOCKED: native module not available');
+      Alert.alert(
+        'Bluetooth Not Available',
+        bleLoadError || 'The Bluetooth module failed to load. BLE features require a dev build (not Expo Go).',
+      );
+      return;
+    }
+
     // Request runtime permissions (Android)
     const permitted = await requestBLEPermissions();
     if (!permitted) return;
@@ -146,13 +182,11 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     setDeviceBPM(null);
     setPerfusionIndex(null);
 
-    const manager = getManager();
-
     // Wait for BLE to be powered on (Android needs this)
     const state = await manager.state();
     if (state !== 'PoweredOn') {
       await new Promise<void>((resolve) => {
-        const sub = manager.onStateChange((newState) => {
+        const sub = manager.onStateChange((newState: string) => {
           if (newState === 'PoweredOn') {
             sub.remove();
             resolve();
@@ -164,7 +198,7 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     manager.startDeviceScan(
       [NORDIC_UART_SERVICE_UUID],
       { allowDuplicates: false },
-      async (error, device) => {
+      async (error: any, device: any) => {
         if (error) {
           console.warn('[Innovo] Scan error:', error.message);
           setConnectionStatus('disconnected');
@@ -194,7 +228,7 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
           subscriptionRef.current = connected.monitorCharacteristicForService(
             NORDIC_UART_SERVICE_UUID,
             INNOVO_PPG_CHARACTERISTIC_UUID,
-            (err, characteristic) => {
+            (err: any, characteristic: any) => {
               if (err) {
                 console.warn('[Innovo] Notification error:', err.message);
                 return;
@@ -233,7 +267,9 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
   const disconnect = useCallback(() => {
     activeRef.current = false;
     const manager = getManager();
-    manager.stopDeviceScan();
+    if (manager) {
+      manager.stopDeviceScan();
+    }
     setScanning(false);
 
     if (subscriptionRef.current) {
@@ -274,6 +310,7 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     perfusionIndex,
     deviceBPM,
     scanning,
+    bleUnavailableReason: BleManagerClass ? null : (bleLoadError || 'BLE module not loaded'),
   };
 }
 
