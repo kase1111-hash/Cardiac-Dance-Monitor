@@ -45,8 +45,9 @@ function makeStatusPacket(opts: {
     0x00,                    // [2] reserved
     bpm,                     // [3] BPM
     0x00,                    // [4] reserved
-    pi,                      // [5] PI × 10
-    0, 0, 0, 0, 0, 0,       // [6-11] reserved
+    0x00,                    // [5] unknown
+    0, 0, 0, 0, 0,          // [6-10] reserved
+    pi,                      // [11] PI × 10
     0xF0,                    // [12] trailer
   ]);
 }

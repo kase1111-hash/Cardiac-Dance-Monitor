@@ -7,7 +7,7 @@
  *   - 2 bytes starting with 0x01: raw PPG waveform at ~28 Hz
  *     → byte[1] = intensity (0-255) → PPGProcessor → PPIs
  *   - 13 bytes starting with 0x3E, ending with 0xF0: status packet ~1/sec
- *     → byte[1]=SpO2%, byte[3]=BPM, byte[5]=Perfusion Index
+ *     → byte[1]=SpO2%, byte[3]=BPM, byte[11]=Perfusion Index
  *
  * Exposes PulseOxInterface + SpO2/PI for the monitor pipeline.
  *
@@ -271,209 +271,30 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
           await new Promise(resolve => setTimeout(resolve, 500));
           console.log('BLE_SETTLE: done');
 
-          // Service/char UUIDs to probe
-          const FFF0_SERVICE = '0000fff0-0000-1000-8000-00805f9b34fb';
-          const FFF1_CHAR = '0000fff1-0000-1000-8000-00805f9b34fb';
-          const FF00_SERVICE = '0000ff00-0000-1000-8000-00805f9b34fb';
-          const FF01_CHAR = '0000ff01-0000-1000-8000-00805f9b34fb';
-          const CHLOE_SERVICE = '00000001-0000-6465-6d6d-65636c6f6843';
-          const CHLOE_CHAR = '00000003-0000-6465-6d6d-65636c6f6843';
-          const NORDIC_TX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
-
-          // Shared data handler for any channel that fires
-          const handleData = (bytes: Uint8Array, label: string) => {
-            if (firstNotification) {
-              console.log('BLE_FIRST_DATA: arrived via ' + label);
-              firstNotification = false;
-            }
-            handler.current.handleNotification(bytes, Date.now());
-          };
-
-          // ============================================================
-          // APPROACH 1: Manager-level monitorCharacteristicForDevice
-          // Uses manager.monitorCharacteristicForDevice() instead of
-          // device.monitorCharacteristicForService() — different code path
-          // in react-native-ble-plx that may handle notifications differently.
-          // Each subscription gets a unique transactionId.
-          // ============================================================
-          const allSubs: any[] = [];
-          const pollIntervals: any[] = [];
-          let txnCounter = 0;
-
-          const monitorViaManager = (serviceUUID: string, charUUID: string, label: string) => {
-            const txnId = 'txn_' + label + '_' + (txnCounter++);
-            try {
-              console.log('BLE_MGR_SUB_' + label + ': manager.monitorCharacteristicForDevice(' + discovered.id + ', ' + serviceUUID + ', ' + charUUID + ', txn=' + txnId + ')');
-              const sub = manager.monitorCharacteristicForDevice(
-                discovered.id,
-                serviceUUID,
-                charUUID,
-                (err: any, characteristic: any) => {
-                  console.log('BLE_MGR_NOTIFY_' + label + ': callback! error=' + (err?.message || 'none') + ' value=' + (characteristic?.value ? characteristic.value.substring(0, 20) : 'null'));
-                  if (err) return;
-                  if (!characteristic?.value) return;
-                  const bytes = base64ToBytes(characteristic.value);
-                  console.log('BLE_MGR_RAW_' + label, bytes.length, 'bytes:', Array.from(bytes.slice(0, 16)));
-                  handleData(bytes, 'MGR_' + label);
-                },
-                txnId,
-              );
-              allSubs.push(sub);
-              console.log('BLE_MGR_SUB_' + label + ': OK (txn=' + txnId + ')');
-            } catch (subErr: any) {
-              console.log('BLE_MGR_SUB_' + label + ': FAILED: ' + subErr.message);
-            }
-          };
-
-          // Also keep device-level monitor as a parallel approach
-          const monitorViaDevice = (serviceUUID: string, charUUID: string, label: string) => {
-            try {
-              console.log('BLE_DEV_SUB_' + label + ': device.monitorCharacteristicForService(' + serviceUUID + ', ' + charUUID + ')');
-              const sub = discovered.monitorCharacteristicForService(
-                serviceUUID,
-                charUUID,
-                (err: any, characteristic: any) => {
-                  console.log('BLE_DEV_NOTIFY_' + label + ': callback! error=' + (err?.message || 'none') + ' value=' + (characteristic?.value ? characteristic.value.substring(0, 20) : 'null'));
-                  if (err) return;
-                  if (!characteristic?.value) return;
-                  const bytes = base64ToBytes(characteristic.value);
-                  console.log('BLE_DEV_RAW_' + label, bytes.length, 'bytes:', Array.from(bytes.slice(0, 16)));
-                  handleData(bytes, 'DEV_' + label);
-                },
-              );
-              allSubs.push(sub);
-              console.log('BLE_DEV_SUB_' + label + ': OK');
-            } catch (subErr: any) {
-              console.log('BLE_DEV_SUB_' + label + ': FAILED: ' + subErr.message);
-            }
-          };
-
-          // Subscribe via BOTH manager-level and device-level APIs on all channels
-          const channels: [string, string, string][] = [
-            [NORDIC_UART_SERVICE_UUID, INNOVO_PPG_CHARACTERISTIC_UUID, 'NORDIC_FFF1'],
-            [FFF0_SERVICE, FFF1_CHAR, 'FFF0_FFF1'],
-            [FF00_SERVICE, FF01_CHAR, 'FF00_FF01'],
-            [CHLOE_SERVICE, CHLOE_CHAR, 'CHLOE_0003'],
-            [NORDIC_UART_SERVICE_UUID, NORDIC_TX, 'NORDIC_TX'],
-          ];
-
-          for (const [svc, chr, lbl] of channels) {
-            monitorViaManager(svc, chr, lbl);
-            monitorViaDevice(svc, chr, lbl);
-          }
-          console.log('BLE_MONITOR: ' + allSubs.length + ' subscriptions created (manager + device)');
-
-          // ============================================================
-          // APPROACH 2: Polling fallback at 50ms (20 Hz)
-          // If notifications are broken in ble-plx, polling via read
-          // proves the data path works.
-          // ============================================================
-          const pollChar = (serviceUUID: string, charUUID: string, label: string) => {
-            let pollCount = 0;
-            let lastValue = '';
-            console.log('BLE_POLL_' + label + ': starting 50ms poll on service=' + serviceUUID + ' char=' + charUUID);
-            const interval = setInterval(async () => {
-              try {
-                const char = await discovered.readCharacteristicForService(serviceUUID, charUUID);
-                if (char?.value && char.value !== lastValue) {
-                  lastValue = char.value;
-                  pollCount++;
-                  const bytes = base64ToBytes(char.value);
-                  // Log first 10 polls, then every 100th
-                  if (pollCount <= 10 || pollCount % 100 === 0) {
-                    console.log('BLE_POLL_' + label + ': NEW data #' + pollCount + ' ' + bytes.length + ' bytes:', Array.from(bytes.slice(0, 16)));
-                  }
-                  handleData(bytes, 'POLL_' + label);
-                }
-              } catch (_e) {
-                // Silently ignore read errors — char may not be readable
-                if (pollCount === 0) {
-                  // Log first failure only
-                  console.log('BLE_POLL_' + label + ': read failed (not readable or disconnected)');
-                  clearInterval(interval);
-                }
+          // Single subscription via manager-level API (confirmed working in testing)
+          console.log('BLE_SUBSCRIBE: monitorCharacteristicForDevice(' + discovered.id + ', ' + NORDIC_UART_SERVICE_UUID + ', ' + INNOVO_PPG_CHARACTERISTIC_UUID + ')');
+          subscriptionRef.current = manager.monitorCharacteristicForDevice(
+            discovered.id,
+            NORDIC_UART_SERVICE_UUID,
+            INNOVO_PPG_CHARACTERISTIC_UUID,
+            (err: any, characteristic: any) => {
+              if (err) {
+                console.log('BLE_ERROR: notification error: ' + err.message);
+                return;
               }
-            }, 50);
-            pollIntervals.push(interval);
-          };
+              if (!characteristic?.value) return;
 
-          // Poll all readable+notifiable characteristics
-          pollChar(NORDIC_UART_SERVICE_UUID, INNOVO_PPG_CHARACTERISTIC_UUID, 'NORDIC_FFF1');
-          pollChar(FF00_SERVICE, FF01_CHAR, 'FF00_FF01');
-          // FFF1 under FFF0
-          pollChar(FFF0_SERVICE, FFF1_CHAR, 'FFF0_FFF1');
+              if (firstNotification) {
+                console.log('BLE_SUBSCRIBE: active — first notification received');
+                firstNotification = false;
+              }
 
-          // ============================================================
-          // APPROACH 3: Indication characteristics
-          // 0xFFF0 under Nordic UART has indicate=true. Indications use
-          // a different BLE mechanism (with ACK) that may work when
-          // notifications don't. monitorCharacteristicForService handles
-          // both, but let's be explicit with the indicatable chars.
-          // ============================================================
-          const FFF0_CHAR = '0000fff0-0000-1000-8000-00805f9b34fb';
-          // Try monitoring the FFF0 characteristic itself (indicate=true)
-          monitorViaManager(NORDIC_UART_SERVICE_UUID, FFF0_CHAR, 'NORDIC_FFF0_IND');
-          monitorViaDevice(NORDIC_UART_SERVICE_UUID, FFF0_CHAR, 'NORDIC_FFF0_IND');
-
-          // Store combined subscription + poll cleanup
-          subscriptionRef.current = {
-            remove: () => {
-              allSubs.forEach(s => s?.remove());
-              pollIntervals.forEach(i => clearInterval(i));
+              const bytes = base64ToBytes(characteristic.value);
+              handler.current.handleNotification(bytes, Date.now());
             },
-          };
-
-          // --- Write start commands to trigger data streaming ---
-          const writeCmd = async (serviceUUID: string, charUUID: string, data: number[], label: string) => {
-            try {
-              const b64 = bytesToBase64(new Uint8Array(data));
-              console.log('BLE_WRITE_' + label + ': writing ' + JSON.stringify(data) + ' to service=' + serviceUUID + ' char=' + charUUID);
-              await discovered.writeCharacteristicWithResponseForService(
-                serviceUUID,
-                charUUID,
-                b64,
-              );
-              console.log('BLE_WRITE_' + label + ': OK');
-            } catch (wErr: any) {
-              console.log('BLE_WRITE_' + label + ': FAILED: ' + wErr.message);
-            }
-          };
-
-          // Also try writeWithoutResponse — some chars only support one type
-          const writeCmdNoResp = async (serviceUUID: string, charUUID: string, data: number[], label: string) => {
-            try {
-              const b64 = bytesToBase64(new Uint8Array(data));
-              console.log('BLE_WRITE_NORESP_' + label + ': writing ' + JSON.stringify(data));
-              await discovered.writeCharacteristicWithoutResponseForService(
-                serviceUUID,
-                charUUID,
-                b64,
-              );
-              console.log('BLE_WRITE_NORESP_' + label + ': OK');
-            } catch (wErr: any) {
-              console.log('BLE_WRITE_NORESP_' + label + ': FAILED: ' + wErr.message);
-            }
-          };
-
-          // Try writing [0x01] to FF02 and FF03 under FF00 service
-          const FF02_CHAR = '0000ff02-0000-1000-8000-00805f9b34fb';
-          const FF03_CHAR = '0000ff03-0000-1000-8000-00805f9b34fb';
-          await writeCmd(FF00_SERVICE, FF02_CHAR, [0x01], 'FF00_FF02');
-          await writeCmd(FF00_SERVICE, FF03_CHAR, [0x01], 'FF00_FF03');
-          await writeCmdNoResp(FF00_SERVICE, FF02_CHAR, [0x01], 'FF00_FF02');
-          await writeCmdNoResp(FF00_SERVICE, FF03_CHAR, [0x01], 'FF00_FF03');
-
-          // Try writing [0x01] to FFF2 under Nordic UART
-          const FFF2_CHAR = '0000fff2-0000-1000-8000-00805f9b34fb';
-          await writeCmd(NORDIC_UART_SERVICE_UUID, FFF2_CHAR, [0x01], 'NORDIC_FFF2');
-          await writeCmdNoResp(NORDIC_UART_SERVICE_UUID, FFF2_CHAR, [0x01], 'NORDIC_FFF2');
-
-          // Try writing [0x01] to Nordic UART RX (standard write path)
-          const NORDIC_RX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
-          await writeCmd(NORDIC_UART_SERVICE_UUID, NORDIC_RX, [0x01], 'NORDIC_RX');
-          await writeCmdNoResp(NORDIC_UART_SERVICE_UUID, NORDIC_RX, [0x01], 'NORDIC_RX');
-
-          console.log('BLE_CONNECT: fully connected — ' + allSubs.length + ' monitors + ' + pollIntervals.length + ' polls active');
+            'txn_innovo_ppg',
+          );
+          console.log('BLE_MONITOR: subscription created');
           setConnectionStatus('connected');
           setSignalQuality('poor'); // upgrades as data flows
         } catch (err: any) {

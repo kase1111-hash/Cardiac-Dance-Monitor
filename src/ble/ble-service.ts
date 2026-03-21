@@ -153,8 +153,9 @@ export interface RawPPGPacket {
  *   [2]    reserved
  *   [3]    BPM (heart rate)
  *   [4]    reserved
- *   [5]    Perfusion Index × 10 (e.g. 35 = PI 3.5%)
- *   [6-11] Reserved / waveform metadata (ignored)
+ *   [5]    unknown (signal quality?)
+ *   [6-10] Reserved / waveform metadata (ignored)
+ *   [11]   Perfusion Index × 10 (e.g. 54 = PI 5.4%)
  *   [12]   0xF0  trailer/sync byte
  */
 export interface StatusPacket {
@@ -203,7 +204,7 @@ export function parseRawPPGPacket(data: Uint8Array): RawPPGPacket | null {
  *
  * Real byte layout from device captures:
  *   [0]=0x3E  [1]=SpO2  [2]=reserved  [3]=BPM  [4]=reserved
- *   [5]=PI×10  [6-11]=reserved  [12]=0xF0
+ *   [5]=unknown  [6-10]=reserved  [11]=PI×10  [12]=0xF0
  */
 export function parseStatusPacket(data: Uint8Array): StatusPacket | null {
   if (data.length < 13) {
@@ -212,7 +213,7 @@ export function parseStatusPacket(data: Uint8Array): StatusPacket | null {
 
   const spo2Raw = data[1];
   const bpm = data[3];
-  const piRaw = data[5];
+  const piRaw = data[11];
 
   // 127 (0x7F) or >100 means invalid / still searching
   const spo2 = spo2Raw === 127 || spo2Raw > 100 ? -1 : spo2Raw;
