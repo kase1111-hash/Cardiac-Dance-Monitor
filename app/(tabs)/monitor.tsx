@@ -13,7 +13,9 @@
 import React, { useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, ScrollView, useWindowDimensions,
+  TouchableOpacity,
 } from 'react-native';
+import { exportBeatCSV } from '../../src/session/export-beat-csv';
 import { useSimulatedPulseOx } from '../../src/hooks/use-simulated-pulse-ox';
 import { useCameraPPG } from '../../src/hooks/use-camera-ppg';
 import { useInnovoPulseOx } from '../../src/ble/use-innovo-pulse-ox';
@@ -29,6 +31,7 @@ import { ThreeQuestions } from '../../src/display/ThreeQuestions';
 import { MetricsRow } from '../../src/display/MetricsRow';
 import { BaselineIndicator } from '../../src/display/BaselineIndicator';
 import { sessionStore } from '../../src/session/session-store-instance';
+import { beatLogger } from '../../src/session/beat-logger';
 
 // NO top-level camera import. CameraPPGView is loaded via conditional
 // require() inside the component, only when sourceType === 'camera'.
@@ -81,6 +84,7 @@ export default function MonitorScreen() {
       prevSourceType.current = sourceType;
       reset();
       resetBaseline();
+      beatLogger.clear();
       // End current session so old data doesn't mix
       if (sessionStarted.current) {
         const session = endSession();
@@ -136,6 +140,27 @@ export default function MonitorScreen() {
 
       // Record beat for session (with raw data)
       recordBeat(state.danceMatch, rawBeat);
+
+      // Append to CSV beat logger for research export
+      const dp = state.displayPoints;
+      const lastPt = dp.length > 0 ? dp[dp.length - 1] : null;
+      beatLogger.append({
+        timestamp: new Date().toISOString(),
+        beat_number: state.totalBeats + 1,
+        ppi_ms: ppi,
+        source: sourceType,
+        spo2: sourceType === 'ble_innovo' ? ble.spo2 : null,
+        bpm: state.bpm,
+        pi_percent: sourceType === 'ble_innovo' ? ble.perfusionIndex : null,
+        dance_name: state.danceMatch?.name ?? null,
+        dance_confidence: state.danceMatch ? Math.round(state.danceMatch.confidence * 100) : null,
+        kappa: state.kappaMedian,
+        gini: state.gini,
+        sigma: state.spread,
+        theta1: lastPt?.theta1 ?? 0,
+        theta2: lastPt?.theta2 ?? 0,
+        trail_length: state.trailLength,
+      });
     }
   }, [latestBeat, pulseOx.latestPPI]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -235,6 +260,15 @@ export default function MonitorScreen() {
           trailLength={state.trailLength}
         />
 
+        {/* Export CSV button */}
+        {state.totalBeats > 0 && (
+          <TouchableOpacity style={styles.exportButton} onPress={exportBeatCSV}>
+            <Text style={styles.exportButtonText}>
+              Export CSV ({beatLogger.count} beats)
+            </Text>
+          </TouchableOpacity>
+        )}
+
         {/* Baseline indicator */}
         <BaselineIndicator
           isLearning={state.isLearningBaseline}
@@ -307,6 +341,19 @@ const styles = StyleSheet.create({
   connectionText: {
     color: '#64748b',
     fontSize: 12,
+  },
+  exportButton: {
+    alignSelf: 'center',
+    backgroundColor: '#1e293b',
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    marginBottom: 12,
+  },
+  exportButtonText: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontFamily: 'monospace',
   },
   sessionInfo: {
     alignItems: 'center',
