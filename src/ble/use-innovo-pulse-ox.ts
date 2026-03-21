@@ -294,36 +294,30 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
             },
             'txn_innovo_ppg',
           );
-          console.log('BLE_MONITOR: subscription created');
+          console.log('BLE_MONITOR: FFF1 subscription created');
 
-          // Write to FFF0 under Nordic UART to initiate PPG streaming on FFF1
+          // Subscribe to FFF0 indications to trigger PPG streaming on FFF1.
+          // The device starts sending PPG data when its CCCD descriptor gets
+          // the indicate-enable write ([0x02, 0x00] to 0x2902), which
+          // monitorCharacteristicForDevice does automatically.
           const FFF0_CHAR = '0000fff0-0000-1000-8000-00805f9b34fb';
-          const startCmd = bytesToBase64(new Uint8Array([0x01]));
-          try {
-            console.log('BLE_START: writing [0x01] to Nordic UART / FFF0 (without response)');
-            await manager.writeCharacteristicWithoutResponseForDevice(
-              discovered.id,
-              NORDIC_UART_SERVICE_UUID,
-              FFF0_CHAR,
-              startCmd,
-            );
-            console.log('BLE_START: FFF0 write OK');
-          } catch (e: any) {
-            console.log('BLE_START: FFF0 writeWithoutResponse failed: ' + e.message);
-            // Fallback: try with response
-            try {
-              console.log('BLE_START: retrying FFF0 with writeWithResponse...');
-              await manager.writeCharacteristicWithResponseForDevice(
-                discovered.id,
-                NORDIC_UART_SERVICE_UUID,
-                FFF0_CHAR,
-                startCmd,
-              );
-              console.log('BLE_START: FFF0 writeWithResponse OK');
-            } catch (e2: any) {
-              console.log('BLE_START: FFF0 writeWithResponse also failed: ' + e2.message);
-            }
-          }
+          console.log('BLE_TRIGGER: subscribing to FFF0 indications to start PPG stream');
+          manager.monitorCharacteristicForDevice(
+            discovered.id,
+            NORDIC_UART_SERVICE_UUID,
+            FFF0_CHAR,
+            (err: any, char: any) => {
+              if (err) {
+                console.log('BLE_FFF0_INDICATE: error: ' + err.message);
+                return;
+              }
+              if (char?.value) {
+                console.log('BLE_FFF0_INDICATE:', char.value);
+              }
+            },
+            'txn_fff0_trigger',
+          );
+          console.log('BLE_TRIGGER: FFF0 indication subscription created — device should start streaming');
 
           setConnectionStatus('connected');
           setSignalQuality('poor'); // upgrades as data flows
