@@ -57,12 +57,17 @@ export interface InnovoPulseOxResult extends PulseOxInterface {
 // Singleton BleManager — must not be recreated per render
 let sharedManager: any = null;
 function getManager(): any | null {
-  if (!BleManagerClass) return null;
+  if (!BleManagerClass) {
+    console.log('BLE_INIT: manager is null — BleManagerClass failed to load');
+    return null;
+  }
   if (!sharedManager) {
     try {
+      console.log('BLE_INIT: creating manager');
       sharedManager = new BleManagerClass();
+      console.log('BLE_INIT: manager created successfully');
     } catch (e: any) {
-      console.warn('BLE_MANAGER_CREATE_FAILED:', e?.message);
+      console.warn('BLE_INIT: manager creation failed:', e?.message);
       return null;
     }
   }
@@ -74,7 +79,12 @@ function getManager(): any | null {
  * Returns true if all granted, false if any denied.
  */
 async function requestBLEPermissions(): Promise<boolean> {
-  if (Platform.OS !== 'android') return true;
+  if (Platform.OS !== 'android') {
+    console.log('BLE_PERMS: non-Android platform, skipping permission request');
+    return true;
+  }
+
+  console.log('BLE_PERMS: requesting (API level=' + Platform.Version + ')');
 
   // Android 12+ (API 31) requires BLUETOOTH_SCAN and BLUETOOTH_CONNECT
   if (Platform.Version >= 31) {
@@ -86,6 +96,7 @@ async function requestBLEPermissions(): Promise<boolean> {
     const allGranted = Object.values(result).every(
       v => v === PermissionsAndroid.RESULTS.GRANTED,
     );
+    console.log('BLE_PERMS: granted=' + allGranted, JSON.stringify(result));
     if (!allGranted) {
       Alert.alert(
         'Bluetooth Permissions Required',
@@ -105,6 +116,7 @@ async function requestBLEPermissions(): Promise<boolean> {
       buttonPositive: 'OK',
     },
   );
+  console.log('BLE_PERMS: granted=' + (granted === PermissionsAndroid.RESULTS.GRANTED));
   if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
     Alert.alert(
       'Location Permission Required',
@@ -184,9 +196,12 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
 
     // Wait for BLE to be powered on (Android needs this)
     const state = await manager.state();
+    console.log('BLE_STATE: adapter=' + state);
     if (state !== 'PoweredOn') {
+      console.log('BLE_STATE: waiting for PoweredOn...');
       await new Promise<void>((resolve) => {
         const sub = manager.onStateChange((newState: string) => {
+          console.log('BLE_STATE: changed to ' + newState);
           if (newState === 'PoweredOn') {
             sub.remove();
             resolve();
@@ -195,12 +210,15 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
       });
     }
 
+    console.log('BLE_SCAN: starting for service ' + NORDIC_UART_SERVICE_UUID);
+    let firstNotification = true;
+
     manager.startDeviceScan(
       [NORDIC_UART_SERVICE_UUID],
       { allowDuplicates: false },
       async (error: any, device: any) => {
         if (error) {
-          console.warn('[Innovo] Scan error:', error.message);
+          console.log('BLE_ERROR: scan error: ' + error.message);
           setConnectionStatus('disconnected');
           setScanning(false);
           activeRef.current = false;
@@ -208,32 +226,46 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
         }
         if (!device) return;
 
+        console.log('BLE_SCAN: found device=' + (device.name || device.localName || '(unnamed)') + ' id=' + device.id);
+
         // Match by name or by specific deviceId
         const nameMatch = device.name?.includes(INNOVO_DEVICE_NAME)
           || device.localName?.includes(INNOVO_DEVICE_NAME);
         if (_deviceId && device.id !== _deviceId) return;
-        if (!_deviceId && !nameMatch) return;
+        if (!_deviceId && !nameMatch) {
+          console.log('BLE_SCAN: skipping — name does not match ' + INNOVO_DEVICE_NAME);
+          return;
+        }
 
         // Found the device — stop scanning and connect
+        console.log('BLE_SCAN: matched! stopping scan');
         manager.stopDeviceScan();
         setScanning(false);
         setConnectionStatus('connecting');
 
         try {
+          console.log('BLE_CONNECT: connecting to ' + device.id);
           const connected = await device.connect({ timeout: 10000 });
+          console.log('BLE_CONNECT: connected, discovering services...');
           await connected.discoverAllServicesAndCharacteristics();
           deviceRef.current = connected;
 
           // Subscribe to 0xFFF1 notifications
+          console.log('BLE_SUBSCRIBE: subscribing to ' + INNOVO_PPG_CHARACTERISTIC_UUID);
           subscriptionRef.current = connected.monitorCharacteristicForService(
             NORDIC_UART_SERVICE_UUID,
             INNOVO_PPG_CHARACTERISTIC_UUID,
             (err: any, characteristic: any) => {
               if (err) {
-                console.warn('[Innovo] Notification error:', err.message);
+                console.log('BLE_ERROR: notification error: ' + err.message);
                 return;
               }
               if (!characteristic?.value) return;
+
+              if (firstNotification) {
+                console.log('BLE_SUBSCRIBE: active — first notification received');
+                firstNotification = false;
+              }
 
               const bytes = base64ToBytes(characteristic.value);
               console.log('BLE_RAW', bytes.length, 'bytes:', Array.from(bytes));
@@ -241,10 +273,11 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
             },
           );
 
+          console.log('BLE_CONNECT: fully connected and subscribed');
           setConnectionStatus('connected');
           setSignalQuality('poor'); // upgrades as data flows
         } catch (err: any) {
-          console.warn('[Innovo] Connect failed:', err?.message);
+          console.log('BLE_ERROR: connect failed: ' + (err?.message || err));
           setConnectionStatus('disconnected');
           activeRef.current = false;
         }
@@ -254,6 +287,7 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     // Scan timeout — stop after 15 seconds if nothing found
     setTimeout(() => {
       if (scanning) {
+        console.log('BLE_SCAN: no devices after 15s — timeout');
         manager.stopDeviceScan();
         setScanning(false);
         if (connectionStatus === 'scanning') {

@@ -28,6 +28,10 @@ interface Props {
 const GRID_SIZE = 10;
 const CROP_SIZE = 100;
 
+// Throttle frame logs to once per second (avoid flooding)
+let lastFrameLogTime = 0;
+let frameCount = 0;
+
 export default function CameraPPGNative({ onFrame, active, ppgState, peakCount }: Props) {
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('back');
@@ -38,6 +42,13 @@ export default function CameraPPGNative({ onFrame, active, ppgState, peakCount }
   const [cameraError, setCameraError] = useState<string | null>(null);
 
   const handleRedMean = useRunOnJS((redMean: number, timestamp: number) => {
+    frameCount++;
+    const now = Date.now();
+    if (now - lastFrameLogTime > 1000) {
+      console.log('CAMERA_FRAME: red=' + redMean.toFixed(1) + ' ts=' + timestamp.toFixed(0) + ' frames/sec=' + frameCount);
+      frameCount = 0;
+      lastFrameLogTime = now;
+    }
     onFrame(redMean, timestamp);
   }, [onFrame]);
 
@@ -86,7 +97,7 @@ export default function CameraPPGNative({ onFrame, active, ppgState, peakCount }
     handleRedMean(redMean, timestamp);
   }, [handleRedMean]);
 
-  console.log('CAMERA device=' + !!device + ' format=' + !!format + ' permission=' + hasPermission);
+  console.log('CAMERA_ACTIVE: rendering CameraPPGNative — device=' + !!device + ' format=' + !!format + ' permission=' + hasPermission + ' active=' + active + ' ppgState=' + ppgState);
 
   if (!hasPermission) {
     return (
@@ -108,6 +119,7 @@ export default function CameraPPGNative({ onFrame, active, ppgState, peakCount }
   }
 
   if (!active) {
+    console.log('CAMERA_STARTED: isActive=false — Camera component will not render');
     return null;
   }
 
@@ -126,6 +138,8 @@ export default function CameraPPGNative({ onFrame, active, ppgState, peakCount }
       ? 'Recording — hold still'
       : 'Starting camera...';
 
+  console.log('CAMERA_STARTED: isActive=true — mounting Camera component with torch=on pixelFormat=rgb');
+
   return (
     <View style={styles.container}>
       <Camera
@@ -139,8 +153,11 @@ export default function CameraPPGNative({ onFrame, active, ppgState, peakCount }
         frameProcessor={frameProcessor}
         preview={false}
         onError={(error) => {
-          console.warn('CAMERA_ERROR:', error.message);
+          console.log('CAMERA_ERROR: ' + error.message + ' (code=' + (error as any).code + ')');
           setCameraError(error.message);
+        }}
+        onStarted={() => {
+          console.log('CAMERA_STARTED: Camera.onStarted fired — frame processor should begin');
         }}
       />
       <View style={styles.overlay}>
