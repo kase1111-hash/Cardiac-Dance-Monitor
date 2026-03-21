@@ -296,24 +296,33 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
           );
           console.log('BLE_MONITOR: subscription created');
 
-          // Write start commands to initiate PPG streaming
-          const FF00_SERVICE = '0000ff00-0000-1000-8000-00805f9b34fb';
-          const FF02_CHAR = '0000ff02-0000-1000-8000-00805f9b34fb';
-          const FF03_CHAR = '0000ff03-0000-1000-8000-00805f9b34fb';
+          // Write to FFF0 under Nordic UART to initiate PPG streaming on FFF1
+          const FFF0_CHAR = '0000fff0-0000-1000-8000-00805f9b34fb';
           const startCmd = bytesToBase64(new Uint8Array([0x01]));
           try {
-            console.log('BLE_START: writing [0x01] to FF00/FF02');
-            await discovered.writeCharacteristicWithResponseForService(FF00_SERVICE, FF02_CHAR, startCmd);
-            console.log('BLE_START: FF02 OK');
+            console.log('BLE_START: writing [0x01] to Nordic UART / FFF0 (without response)');
+            await manager.writeCharacteristicWithoutResponseForDevice(
+              discovered.id,
+              NORDIC_UART_SERVICE_UUID,
+              FFF0_CHAR,
+              startCmd,
+            );
+            console.log('BLE_START: FFF0 write OK');
           } catch (e: any) {
-            console.log('BLE_START: FF02 failed: ' + e.message);
-          }
-          try {
-            console.log('BLE_START: writing [0x01] to FF00/FF03');
-            await discovered.writeCharacteristicWithResponseForService(FF00_SERVICE, FF03_CHAR, startCmd);
-            console.log('BLE_START: FF03 OK');
-          } catch (e: any) {
-            console.log('BLE_START: FF03 failed: ' + e.message);
+            console.log('BLE_START: FFF0 writeWithoutResponse failed: ' + e.message);
+            // Fallback: try with response
+            try {
+              console.log('BLE_START: retrying FFF0 with writeWithResponse...');
+              await manager.writeCharacteristicWithResponseForDevice(
+                discovered.id,
+                NORDIC_UART_SERVICE_UUID,
+                FFF0_CHAR,
+                startCmd,
+              );
+              console.log('BLE_START: FFF0 writeWithResponse OK');
+            } catch (e2: any) {
+              console.log('BLE_START: FFF0 writeWithResponse also failed: ' + e2.message);
+            }
           }
 
           setConnectionStatus('connected');
