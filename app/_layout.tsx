@@ -2,31 +2,7 @@
 // (ES import statements get hoisted, defeating sequential logging)
 console.log('APP_BOOT: _layout.tsx executing');
 
-// === Probe native modules one by one ===
-console.log('APP_BOOT: testing react-native-ble-plx...');
-try {
-  require('react-native-ble-plx');
-  console.log('APP_BOOT: BLE OK');
-} catch (e: any) {
-  console.log('APP_BOOT: BLE FAILED: ' + e.message);
-}
-
-console.log('APP_BOOT: testing react-native-vision-camera...');
-try {
-  require('react-native-vision-camera');
-  console.log('APP_BOOT: CAMERA OK');
-} catch (e: any) {
-  console.log('APP_BOOT: CAMERA FAILED: ' + e.message);
-}
-
-console.log('APP_BOOT: testing react-native-worklets-core...');
-try {
-  require('react-native-worklets-core');
-  console.log('APP_BOOT: WORKLETS OK');
-} catch (e: any) {
-  console.log('APP_BOOT: WORKLETS FAILED: ' + e.message);
-}
-
+// === Probe remaining native modules (BLE, VisionCamera, worklets-core removed from build) ===
 console.log('APP_BOOT: testing react-native-reanimated...');
 try {
   require('react-native-reanimated');
