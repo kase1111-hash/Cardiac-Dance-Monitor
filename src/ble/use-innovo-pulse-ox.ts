@@ -265,84 +265,100 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
             console.log('BLE_DISCOVERY: enumeration failed: ' + discErr.message);
           }
 
-          // Try to enable notifications via CCCD descriptor (0x2902)
-          // Some devices require writing [0x01, 0x00] before notifications flow
-          const CCCD_UUID = '00002902-0000-1000-8000-00805f9b34fb';
-          try {
-            console.log('BLE_CCCD: writing enable-notifications to descriptor ' + CCCD_UUID);
-            // Encode [0x01, 0x00] as base64 = "AQAA" (but we need "AQA=" for 2 bytes)
-            const enableNotifBase64 = bytesToBase64(new Uint8Array([0x01, 0x00]));
-            await discovered.writeDescriptorForService(
-              NORDIC_UART_SERVICE_UUID,
-              INNOVO_PPG_CHARACTERISTIC_UUID,
-              CCCD_UUID,
-              enableNotifBase64,
-            );
-            console.log('BLE_CCCD: write succeeded');
-          } catch (cccdErr: any) {
-            console.log('BLE_CCCD: write failed (may be OK if auto-enabled): ' + cccdErr.message);
-          }
+          // 500ms settling time — some Android BLE stacks need this after
+          // service discovery before subscriptions work reliably
+          console.log('BLE_SETTLE: waiting 500ms after discovery...');
+          await new Promise(resolve => setTimeout(resolve, 500));
+          console.log('BLE_SETTLE: done');
 
-          // Subscribe to 0xFFF1 notifications
-          console.log('BLE_SUBSCRIBE: calling monitorCharacteristicForService(' + NORDIC_UART_SERVICE_UUID + ', ' + INNOVO_PPG_CHARACTERISTIC_UUID + ')');
-          subscriptionRef.current = discovered.monitorCharacteristicForService(
-            NORDIC_UART_SERVICE_UUID,
-            INNOVO_PPG_CHARACTERISTIC_UUID,
-            (err: any, characteristic: any) => {
-              console.log('BLE_NOTIFY: callback fired', 'error=' + (err?.message || 'none'), 'value=' + (characteristic?.value || 'null'));
-              if (err) {
-                console.log('BLE_ERROR: notification error: ' + err.message);
-                return;
-              }
-              if (!characteristic?.value) return;
+          // --- Helper: subscribe to a characteristic and log which fires ---
+          const allSubs: any[] = [];
+          const monitorChar = (serviceUUID: string, charUUID: string, label: string) => {
+            try {
+              console.log('BLE_SUB_' + label + ': subscribing to service=' + serviceUUID + ' char=' + charUUID);
+              const sub = discovered.monitorCharacteristicForService(
+                serviceUUID,
+                charUUID,
+                (err: any, characteristic: any) => {
+                  console.log('BLE_NOTIFY_' + label + ': callback fired error=' + (err?.message || 'none') + ' value=' + (characteristic?.value ? characteristic.value.substring(0, 20) + '...' : 'null'));
+                  if (err) return;
+                  if (!characteristic?.value) return;
 
-              if (firstNotification) {
-                console.log('BLE_SUBSCRIBE: active — first notification received');
-                firstNotification = false;
-              }
+                  if (firstNotification) {
+                    console.log('BLE_FIRST_DATA: arrived via ' + label + ' (service=' + serviceUUID + ' char=' + charUUID + ')');
+                    firstNotification = false;
+                  }
 
-              const bytes = base64ToBytes(characteristic.value);
-              console.log('BLE_RAW', bytes.length, 'bytes:', Array.from(bytes));
-              handler.current.handleNotification(bytes, Date.now());
-            },
-          );
-          console.log('BLE_MONITOR: subscription created');
+                  const bytes = base64ToBytes(characteristic.value);
+                  console.log('BLE_RAW_' + label, bytes.length, 'bytes:', Array.from(bytes.slice(0, 16)));
+                  handler.current.handleNotification(bytes, Date.now());
+                },
+              );
+              allSubs.push(sub);
+              console.log('BLE_SUB_' + label + ': subscription created OK');
+            } catch (subErr: any) {
+              console.log('BLE_SUB_' + label + ': FAILED: ' + subErr.message);
+            }
+          };
 
-          // Also try subscribing under FFF0 service in case FFF1 lives there
-          // (some Innovo firmware puts FFF1 under service FFF0, not Nordic UART)
-          const FFF0_SERVICE_UUID = '0000fff0-0000-1000-8000-00805f9b34fb';
-          try {
-            console.log('BLE_SUBSCRIBE_ALT: trying FFF1 under FFF0 service...');
-            const altSub = discovered.monitorCharacteristicForService(
-              FFF0_SERVICE_UUID,
-              INNOVO_PPG_CHARACTERISTIC_UUID,
-              (err: any, characteristic: any) => {
-                console.log('BLE_NOTIFY_ALT: callback fired (FFF0 service)', 'error=' + (err?.message || 'none'), 'value=' + (characteristic?.value || 'null'));
-                if (err) return;
-                if (!characteristic?.value) return;
+          // --- Subscribe to ALL notifiable characteristics ---
+          // 1. Original: FFF1 under Nordic UART service
+          monitorChar(NORDIC_UART_SERVICE_UUID, INNOVO_PPG_CHARACTERISTIC_UUID, 'NORDIC_FFF1');
 
-                if (firstNotification) {
-                  console.log('BLE_SUBSCRIBE_ALT: active — first notification via FFF0 service');
-                  firstNotification = false;
-                }
+          // 2. FFF1 under FFF0 service
+          const FFF0_SERVICE = '0000fff0-0000-1000-8000-00805f9b34fb';
+          const FFF1_CHAR = '0000fff1-0000-1000-8000-00805f9b34fb';
+          monitorChar(FFF0_SERVICE, FFF1_CHAR, 'FFF0_FFF1');
 
-                const bytes = base64ToBytes(characteristic.value);
-                console.log('BLE_RAW', bytes.length, 'bytes:', Array.from(bytes));
-                handler.current.handleNotification(bytes, Date.now());
-              },
-            );
-            console.log('BLE_SUBSCRIBE_ALT: FFF0 subscription created');
-            // Store alt subscription for cleanup
-            const origSub = subscriptionRef.current;
-            subscriptionRef.current = {
-              remove: () => {
-                origSub?.remove();
-                altSub?.remove();
-              },
-            };
-          } catch (altErr: any) {
-            console.log('BLE_SUBSCRIBE_ALT: FFF0 service not found (expected if FFF1 is under Nordic UART): ' + altErr.message);
-          }
+          // 3. FF01 under FF00 service (notifiable per discovery)
+          const FF00_SERVICE = '0000ff00-0000-1000-8000-00805f9b34fb';
+          const FF01_CHAR = '0000ff01-0000-1000-8000-00805f9b34fb';
+          monitorChar(FF00_SERVICE, FF01_CHAR, 'FF00_FF01');
+
+          // 4. 0x0003 under the "Chloe" service
+          const CHLOE_SERVICE = '00000001-0000-6465-6d6d-65636c6f6843';
+          const CHLOE_CHAR = '00000003-0000-6465-6d6d-65636c6f6843';
+          monitorChar(CHLOE_SERVICE, CHLOE_CHAR, 'CHLOE_0003');
+
+          // 5. Nordic UART TX characteristic (standard notify path)
+          const NORDIC_TX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+          monitorChar(NORDIC_UART_SERVICE_UUID, NORDIC_TX, 'NORDIC_TX');
+
+          // Store combined subscription for cleanup
+          subscriptionRef.current = {
+            remove: () => allSubs.forEach(s => s?.remove()),
+          };
+          console.log('BLE_MONITOR: ' + allSubs.length + ' subscriptions created');
+
+          // --- Write start commands to trigger data streaming ---
+          const writeCmd = async (serviceUUID: string, charUUID: string, data: number[], label: string) => {
+            try {
+              const b64 = bytesToBase64(new Uint8Array(data));
+              console.log('BLE_WRITE_' + label + ': writing ' + JSON.stringify(data) + ' to service=' + serviceUUID + ' char=' + charUUID);
+              await discovered.writeCharacteristicWithResponseForService(
+                serviceUUID,
+                charUUID,
+                b64,
+              );
+              console.log('BLE_WRITE_' + label + ': OK');
+            } catch (wErr: any) {
+              console.log('BLE_WRITE_' + label + ': FAILED: ' + wErr.message);
+            }
+          };
+
+          // Try writing [0x01] to FF02 and FF03 under FF00 service
+          const FF02_CHAR = '0000ff02-0000-1000-8000-00805f9b34fb';
+          const FF03_CHAR = '0000ff03-0000-1000-8000-00805f9b34fb';
+          await writeCmd(FF00_SERVICE, FF02_CHAR, [0x01], 'FF00_FF02');
+          await writeCmd(FF00_SERVICE, FF03_CHAR, [0x01], 'FF00_FF03');
+
+          // Try writing [0x01] to FFF2 under Nordic UART (RX characteristic)
+          const FFF2_CHAR = '0000fff2-0000-1000-8000-00805f9b34fb';
+          await writeCmd(NORDIC_UART_SERVICE_UUID, FFF2_CHAR, [0x01], 'NORDIC_FFF2');
+
+          // Try writing [0x01] to Nordic UART RX (standard write path)
+          const NORDIC_RX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+          await writeCmd(NORDIC_UART_SERVICE_UUID, NORDIC_RX, [0x01], 'NORDIC_RX');
 
           console.log('BLE_CONNECT: fully connected and subscribed');
           setConnectionStatus('connected');
