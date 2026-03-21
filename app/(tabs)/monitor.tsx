@@ -10,12 +10,20 @@
  * 6. Update all display components
  * 7. Session records all data
  */
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, ScrollView, useWindowDimensions,
   TouchableOpacity,
 } from 'react-native';
+import Svg, { Polyline } from 'react-native-svg';
 import { exportBeatCSV } from '../../src/session/export-beat-csv';
+import {
+  startChestAccel, stopChestAccel, clearAccelBuffer,
+  getAccelBuffer, isAccelAvailable, detectMotionArtifact,
+} from '../../src/sensors/chest-accel';
+import {
+  getBreathRate, getLatestIBI, getFilteredZForDisplay,
+} from '../../src/sensors/respiratory';
 import { useSimulatedPulseOx } from '../../src/hooks/use-simulated-pulse-ox';
 import { useCameraPPG } from '../../src/hooks/use-camera-ppg';
 import { useInnovoPulseOx } from '../../src/ble/use-innovo-pulse-ox';
@@ -60,6 +68,54 @@ export default function MonitorScreen() {
   const sessionStarted = useRef(false);
   const prevResetCounter = useRef(baselineResetCounter);
 
+  // Chest mode state
+  const [chestMode, setChestMode] = useState(false);
+  const [showChestOverlay, setShowChestOverlay] = useState(false);
+  const [breathRate, setBreathRate] = useState<number | null>(null);
+  const [breathWaveform, setBreathWaveform] = useState<{ timestamp: number; value: number }[]>([]);
+  const breathUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Chest mode toggle handler
+  const toggleChestMode = useCallback(() => {
+    if (!chestMode) {
+      if (!isAccelAvailable()) {
+        const { Alert } = require('react-native');
+        Alert.alert('Chest Mode Unavailable', 'Requires dev build with expo-sensors.');
+        return;
+      }
+      const started = startChestAccel();
+      if (started) {
+        setChestMode(true);
+        setShowChestOverlay(true);
+        // Auto-dismiss overlay after 5 seconds
+        setTimeout(() => setShowChestOverlay(false), 5000);
+        // Update breath rate and waveform every 2 seconds
+        breathUpdateRef.current = setInterval(() => {
+          const buf = getAccelBuffer();
+          setBreathRate(getBreathRate(buf));
+          setBreathWaveform(getFilteredZForDisplay(buf, 20000));
+        }, 2000);
+      }
+    } else {
+      stopChestAccel();
+      setChestMode(false);
+      setBreathRate(null);
+      setBreathWaveform([]);
+      if (breathUpdateRef.current) {
+        clearInterval(breathUpdateRef.current);
+        breathUpdateRef.current = null;
+      }
+    }
+  }, [chestMode]);
+
+  // Cleanup chest mode on unmount
+  useEffect(() => {
+    return () => {
+      if (breathUpdateRef.current) clearInterval(breathUpdateRef.current);
+      stopChestAccel();
+    };
+  }, []);
+
   // Connect/disconnect all sources when sourceType changes + reset pipeline
   const prevSourceType = useRef(sourceType);
   useEffect(() => {
@@ -85,6 +141,7 @@ export default function MonitorScreen() {
       reset();
       resetBaseline();
       beatLogger.clear();
+      clearAccelBuffer();
       // End current session so old data doesn't mix
       if (sessionStarted.current) {
         const session = endSession();
@@ -144,6 +201,8 @@ export default function MonitorScreen() {
       // Append to CSV beat logger for research export
       const dp = state.displayPoints;
       const lastPt = dp.length > 0 ? dp[dp.length - 1] : null;
+      const now = Date.now();
+      const accelBuf = chestMode ? getAccelBuffer() : [];
       beatLogger.append({
         timestamp: new Date().toISOString(),
         beat_number: state.totalBeats + 1,
@@ -160,6 +219,9 @@ export default function MonitorScreen() {
         theta1: lastPt?.theta1 ?? 0,
         theta2: lastPt?.theta2 ?? 0,
         trail_length: state.trailLength,
+        motion_artifact: chestMode ? detectMotionArtifact(now, ppi) : false,
+        breath_rate: chestMode ? getBreathRate(accelBuf) : null,
+        ibi_ms: chestMode ? getLatestIBI(accelBuf) : null,
       });
     }
   }, [latestBeat, pulseOx.latestPPI]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -188,6 +250,31 @@ export default function MonitorScreen() {
 
   const danceName = state.danceMatch?.name ?? null;
 
+  // Convert breath waveform to SVG polyline points string
+  const breathWaveformToPoints = (
+    data: { timestamp: number; value: number }[],
+    w: number,
+    h: number,
+  ): string => {
+    if (data.length < 2) return '';
+    const tMin = data[0].timestamp;
+    const tMax = data[data.length - 1].timestamp;
+    const tRange = tMax - tMin || 1;
+    let vMin = Infinity;
+    let vMax = -Infinity;
+    for (const d of data) {
+      if (d.value < vMin) vMin = d.value;
+      if (d.value > vMax) vMax = d.value;
+    }
+    const vRange = vMax - vMin || 1;
+    const pad = 2;
+    return data.map(d => {
+      const x = ((d.timestamp - tMin) / tRange) * w;
+      const y = pad + (1 - (d.value - vMin) / vRange) * (h - 2 * pad);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -207,8 +294,32 @@ export default function MonitorScreen() {
                 ? 'Scanning for sensor...'
                 : 'Disconnected'}
           </Text>
-          <SignalQualityBadge quality={pulseOx.signalQuality} />
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <TouchableOpacity
+              style={[styles.chestToggle, chestMode && styles.chestToggleActive]}
+              onPress={toggleChestMode}
+            >
+              <Text style={[styles.chestToggleText, chestMode && styles.chestToggleTextActive]}>
+                Chest
+              </Text>
+            </TouchableOpacity>
+            <SignalQualityBadge quality={pulseOx.signalQuality} />
+          </View>
         </View>
+
+        {/* Chest mode instruction overlay */}
+        {showChestOverlay && (
+          <TouchableOpacity
+            style={styles.chestOverlay}
+            onPress={() => setShowChestOverlay(false)}
+            activeOpacity={0.9}
+          >
+            <Text style={styles.chestOverlayText}>
+              Place phone flat on chest.{'\n'}Look forward, breathe naturally.
+            </Text>
+            <Text style={styles.chestOverlayDismiss}>Tap to dismiss</Text>
+          </TouchableOpacity>
+        )}
 
         {/* Camera PPG view — loaded via conditional require() so
              VisionCamera is never evaluated unless camera mode is active.
@@ -259,6 +370,27 @@ export default function MonitorScreen() {
           size={torusSize}
           trailLength={state.trailLength}
         />
+
+        {/* Breath rate display + waveform (chest mode only) */}
+        {chestMode && (
+          <View style={styles.breathSection}>
+            <Text style={styles.breathRateText}>
+              BR: {breathRate !== null ? `${breathRate} /min` : '--'}
+            </Text>
+            {breathWaveform.length > 2 && (
+              <View style={styles.breathWaveContainer}>
+                <Svg width={torusSize} height={40}>
+                  <Polyline
+                    points={breathWaveformToPoints(breathWaveform, torusSize, 40)}
+                    fill="none"
+                    stroke="rgba(96,165,250,0.3)"
+                    strokeWidth="1.5"
+                  />
+                </Svg>
+              </View>
+            )}
+          </View>
+        )}
 
         {/* Export CSV button */}
         {state.totalBeats > 0 && (
@@ -341,6 +473,56 @@ const styles = StyleSheet.create({
   connectionText: {
     color: '#64748b',
     fontSize: 12,
+  },
+  chestToggle: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  chestToggleActive: {
+    backgroundColor: '#1e3a5f',
+    borderColor: '#60a5fa',
+  },
+  chestToggleText: {
+    color: '#64748b',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  chestToggleTextActive: {
+    color: '#60a5fa',
+  },
+  chestOverlay: {
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    borderRadius: 12,
+    padding: 24,
+    marginBottom: 12,
+    alignItems: 'center',
+  },
+  chestOverlayText: {
+    color: '#e2e8f0',
+    fontSize: 16,
+    textAlign: 'center',
+    lineHeight: 24,
+  },
+  chestOverlayDismiss: {
+    color: '#64748b',
+    fontSize: 12,
+    marginTop: 12,
+  },
+  breathSection: {
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  breathRateText: {
+    color: '#60a5fa',
+    fontSize: 14,
+    fontFamily: 'monospace',
+    marginBottom: 4,
+  },
+  breathWaveContainer: {
+    alignItems: 'center',
   },
   exportButton: {
     alignSelf: 'center',
