@@ -295,6 +295,27 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
             'txn_innovo_ppg',
           );
           console.log('BLE_MONITOR: subscription created');
+
+          // Write start commands to initiate PPG streaming
+          const FF00_SERVICE = '0000ff00-0000-1000-8000-00805f9b34fb';
+          const FF02_CHAR = '0000ff02-0000-1000-8000-00805f9b34fb';
+          const FF03_CHAR = '0000ff03-0000-1000-8000-00805f9b34fb';
+          const startCmd = bytesToBase64(new Uint8Array([0x01]));
+          try {
+            console.log('BLE_START: writing [0x01] to FF00/FF02');
+            await discovered.writeCharacteristicWithResponseForService(FF00_SERVICE, FF02_CHAR, startCmd);
+            console.log('BLE_START: FF02 OK');
+          } catch (e: any) {
+            console.log('BLE_START: FF02 failed: ' + e.message);
+          }
+          try {
+            console.log('BLE_START: writing [0x01] to FF00/FF03');
+            await discovered.writeCharacteristicWithResponseForService(FF00_SERVICE, FF03_CHAR, startCmd);
+            console.log('BLE_START: FF03 OK');
+          } catch (e: any) {
+            console.log('BLE_START: FF03 failed: ' + e.message);
+          }
+
           setConnectionStatus('connected');
           setSignalQuality('poor'); // upgrades as data flows
         } catch (err: any) {
