@@ -10,7 +10,7 @@
  * 6. Update all display components
  * 7. Session records all data
  */
-import React, { useEffect, useRef, useCallback, Suspense } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, ScrollView, useWindowDimensions,
 } from 'react-native';
@@ -30,50 +30,10 @@ import { MetricsRow } from '../../src/display/MetricsRow';
 import { BaselineIndicator } from '../../src/display/BaselineIndicator';
 import { sessionStore } from '../../src/session/session-store-instance';
 
-// Lazy-load CameraPPGView so react-native-vision-camera is never imported
-// unless the user actually selects camera mode. If VisionCamera is broken
-// or unavailable (Expo Go, device policy, etc.), only camera mode is affected.
-const LazyCameraPPGView = React.lazy(() => import('../../src/display/CameraPPGView'));
-
-/**
- * Error boundary that catches any crash from VisionCamera (import failure,
- * device policy restriction, missing native module, etc.) and shows a
- * graceful fallback instead of killing the entire monitor screen.
- */
-class CameraErrorBoundary extends React.Component<
-  { children: React.ReactNode },
-  { hasError: boolean; errorMsg: string }
-> {
-  state = { hasError: false, errorMsg: '' };
-
-  static getDerivedStateFromError(error: Error) {
-    return { hasError: true, errorMsg: error.message || 'Unknown error' };
-  }
-
-  componentDidCatch(error: Error) {
-    console.warn('CAMERA_BOUNDARY_CATCH:', error.message);
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <View style={{
-          height: 120, borderRadius: 12, overflow: 'hidden',
-          backgroundColor: '#0a0a1a', marginBottom: 12,
-          justifyContent: 'center', alignItems: 'center',
-        }}>
-          <Text style={{ color: '#94a3b8', fontSize: 14 }}>
-            Camera unavailable
-          </Text>
-          <Text style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>
-            {this.state.errorMsg}
-          </Text>
-        </View>
-      );
-    }
-    return this.props.children;
-  }
-}
+// NO top-level camera import. CameraPPGView is loaded via conditional
+// require() inside the component, only when sourceType === 'camera'.
+// This ensures VisionCamera module-level crashes never affect BLE or
+// simulated modes.
 
 export default function MonitorScreen() {
   const { width } = useWindowDimensions();
@@ -225,29 +185,36 @@ export default function MonitorScreen() {
           <SignalQualityBadge quality={pulseOx.signalQuality} />
         </View>
 
-        {/* Camera PPG view — lazy-loaded + error boundary so VisionCamera
-             crashes never affect the rest of the monitor screen */}
-        {sourceType === 'camera' && (
-          <CameraErrorBoundary>
-            <Suspense fallback={
-              <View style={{
-                height: 120, borderRadius: 12, backgroundColor: '#0a0a1a',
-                marginBottom: 12, justifyContent: 'center', alignItems: 'center',
-              }}>
-                <Text style={{ color: '#94a3b8', fontSize: 14 }}>
-                  Loading camera...
-                </Text>
-              </View>
-            }>
-              <LazyCameraPPGView
+        {/* Camera PPG view — loaded via conditional require() so
+             VisionCamera is never evaluated unless camera mode is active.
+             CameraPPGView itself wraps CameraPPGNative in a try-catch,
+             so even if VisionCamera crashes on require(), we get a
+             graceful fallback instead of a dead monitor screen. */}
+        {sourceType === 'camera' && (() => {
+          try {
+            const CameraView = require('../../src/display/CameraPPGView').default;
+            return (
+              <CameraView
                 onFrame={handleCameraFrame}
                 active={camera.connectionStatus === 'connected'}
                 ppgState={camera.ppgState}
                 peakCount={camera.peakCount}
               />
-            </Suspense>
-          </CameraErrorBoundary>
-        )}
+            );
+          } catch (e: any) {
+            console.warn('CAMERA_REQUIRE_FAILED:', e?.message);
+            return (
+              <View style={{
+                height: 120, borderRadius: 12, backgroundColor: '#0a0a1a',
+                marginBottom: 12, justifyContent: 'center', alignItems: 'center',
+              }}>
+                <Text style={{ color: '#94a3b8', fontSize: 14 }}>
+                  Camera unavailable
+                </Text>
+              </View>
+            );
+          }
+        })()}
 
         {/* BPM display */}
         <BPMDisplay bpm={state.bpm} sourceName={pulseOx.sourceName} />
