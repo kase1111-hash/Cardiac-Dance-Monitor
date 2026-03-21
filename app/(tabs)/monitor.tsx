@@ -35,28 +35,14 @@ export default function MonitorScreen() {
   const { width } = useWindowDimensions();
   const torusSize = Math.min(width - 32, 300);
   const { sourceType, simulatedScenario, baselineResetCounter } = useDataSource();
-  const simulated = useSimulatedPulseOx(simulatedScenario);
+  const simulated = useSimulatedPulseOx(simulatedScenario, false); // no auto-start
   const camera = useCameraPPG();
   const ble = useInnovoPulseOx();
 
   // Select active source based on sourceType
   const pulseOx = sourceType === 'camera' ? camera
-    : sourceType === 'ble_innovo' ? ble
+    : sourceType === 'ble_innovo' || sourceType === 'ble' ? ble
     : simulated;
-
-  // Auto-connect/disconnect camera and BLE when source changes
-  useEffect(() => {
-    if (sourceType === 'camera') {
-      camera.connect('camera');
-    } else {
-      camera.disconnect();
-    }
-    if (sourceType === 'ble_innovo') {
-      ble.connect();
-    } else {
-      ble.disconnect();
-    }
-  }, [sourceType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleCameraFrame = useCallback((redMean: number, timestampMs: number) => {
     camera.processFrame(redMean, timestampMs);
@@ -66,6 +52,41 @@ export default function MonitorScreen() {
 
   const sessionStarted = useRef(false);
   const prevResetCounter = useRef(baselineResetCounter);
+
+  // Connect/disconnect all sources when sourceType changes + reset pipeline
+  const prevSourceType = useRef(sourceType);
+  useEffect(() => {
+    console.log('SOURCE_ACTIVE:', sourceType);
+
+    // Disconnect all sources first
+    simulated.disconnect();
+    camera.disconnect();
+    ble.disconnect();
+
+    // Connect the selected source
+    if (sourceType === 'simulated') {
+      simulated.connect();
+    } else if (sourceType === 'camera') {
+      camera.connect('camera');
+    } else if (sourceType === 'ble_innovo' || sourceType === 'ble') {
+      ble.connect();
+    }
+
+    // Reset pipeline when source actually changes (not on first mount)
+    if (prevSourceType.current !== sourceType) {
+      prevSourceType.current = sourceType;
+      reset();
+      resetBaseline();
+      // End current session so old data doesn't mix
+      if (sessionStarted.current) {
+        const session = endSession();
+        if (session && session.beatCount > 0) {
+          sessionStore.saveSession(session);
+        }
+        sessionStarted.current = false;
+      }
+    }
+  }, [sourceType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Watch for baseline reset requests from Settings
   useEffect(() => {
@@ -83,7 +104,7 @@ export default function MonitorScreen() {
   useEffect(() => {
     const ppi = latestBeat?.ppi ?? pulseOx.latestPPI;
     if (ppi !== null && ppi !== undefined) {
-      console.log('BEAT', state.totalBeats + 1, 'ppi=', ppi);
+      console.log('BEAT', state.totalBeats + 1, 'ppi=', ppi, 'source=', sourceType);
       processPPI(ppi);
 
       // Auto-start session on first valid PPI
