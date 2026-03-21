@@ -51,7 +51,7 @@ interface Props {
 const GRID_SIZE = 10;
 const CROP_SIZE = 100; // pixels — center crop dimensions
 
-export function CameraPPGView({ onFrame, active, ppgState, peakCount }: Props) {
+export default function CameraPPGView({ onFrame, active, ppgState, peakCount }: Props) {
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('back');
   const format = useCameraFormat(device, [
