@@ -2,3 +2,14 @@ node_modules/
 dist/
 .expo/
 *.tsbuildinfo
+
+# Local artifacts
+android/
+*.zip
+*.msi
+*.jpg
+*.csv
+*.bat
+$env
+echo
+npm
