@@ -23,11 +23,11 @@ jest.mock('react-native-ble-plx', () => {
 
 jest.mock('react-native-vision-camera', () => {
   throw new Error('Camera restricted by device policy');
-});
+}, { virtual: true });
 
 jest.mock('react-native-worklets-core', () => {
   throw new Error('Worklets not available');
-});
+}, { virtual: true });
 
 jest.mock('expo-camera', () => {
   throw new Error('expo-camera not available in this environment');

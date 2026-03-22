@@ -353,7 +353,7 @@ export default function MonitorScreen() {
         })()}
 
         {/* BPM display */}
-        <BPMDisplay bpm={state.bpm} sourceName={pulseOx.sourceName} />
+        <BPMDisplay bpm={state.bpm} bpm15={state.bpm15} sourceName={pulseOx.sourceName} />
 
         {/* SpO2 display (Innovo BLE source — free data from status packets) */}
         {sourceType === 'ble_innovo' && ble.spo2 !== null && (

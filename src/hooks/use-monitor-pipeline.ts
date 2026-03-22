@@ -47,6 +47,8 @@ export interface PipelineState {
   isLearningBaseline: boolean;
   /** Baseline beat count (for display) */
   baselineBeatCount: number;
+  /** 15-beat rolling average BPM */
+  bpm15: number | null;
   /** Dynamic trail length from autocorrelation (respiratory cycle) */
   trailLength: number;
 }
@@ -104,6 +106,7 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
     displayPoints: [],
     danceMatch: null,
     bpm: null,
+    bpm15: null,
     kappaMedian: 0,
     gini: 0,
     spread: 0,
@@ -205,6 +208,8 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
 
     // BPM + torus display update on EVERY beat
     const currentBpm = buf.length >= 2 ? Math.round(60000 / mean(buf)) : null;
+    const last15 = buf.slice(-15);
+    const bpm15 = last15.length >= 2 ? Math.round(60000 / mean(last15)) : null;
 
     // Respiratory cycle trail length — recompute every 10 beats (cheap enough)
     let trailUpdate: Partial<PipelineState> = {};
@@ -216,6 +221,7 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
     let perBeatUpdate: Partial<PipelineState> = {
       displayPoints: [...displayPoints.current],
       bpm: currentBpm,
+      bpm15,
       totalBeats: totalBeats.current,
       isDancing: totalBeats.current >= 10,
       baselineLearningProgress: bs.getLearningProgress(),
@@ -291,6 +297,7 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
       displayPoints: [],
       danceMatch: null,
       bpm: null,
+      bpm15: null,
       kappaMedian: 0,
       gini: 0,
       spread: 0,
