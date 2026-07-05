@@ -40,19 +40,7 @@ export async function exportBeatCSV(): Promise<void> {
     // expo modules not available — fall through to clipboard
   }
 
-  // Fallback: copy to clipboard
-  try {
-    const { default: Clipboard } = await import('expo-clipboard');
-    if (Clipboard?.setStringAsync) {
-      await Clipboard.setStringAsync(csv);
-      Alert.alert('CSV Copied', `${beatLogger.count} beats copied to clipboard as CSV.`);
-      return;
-    }
-  } catch (_e) {
-    // expo-clipboard not available
-  }
-
-  // Last resort: React Native Clipboard
+  // Fallback: React Native Clipboard
   try {
     const { Clipboard: RNClipboard } = require('react-native');
     if (RNClipboard?.setString) {
@@ -66,6 +54,6 @@ export async function exportBeatCSV(): Promise<void> {
 
   Alert.alert(
     'Export Unavailable',
-    `${beatLogger.count} beats recorded but no export method is available. Install expo-sharing or expo-clipboard.`,
+    `${beatLogger.count} beats recorded but no export method is available. Install expo-sharing.`,
   );
 }

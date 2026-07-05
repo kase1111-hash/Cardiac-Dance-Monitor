@@ -198,8 +198,8 @@ export default function SettingsScreen() {
         {/* Export */}
         <Text style={styles.sectionHeader}>Export</Text>
         <Text style={styles.infoText}>
-          Export individual sessions from the History tab. Tap a session to view details,
-          then use the share button to export as CSV or PDF.
+          Export the live beat log from the Monitor tab (Export CSV button),
+          or use Export Raw Data below for the most recent recorded session.
         </Text>
         <TouchableOpacity style={[styles.actionRow, { marginTop: 8 }]} onPress={handleExportRawData}>
           <Text style={styles.actionLabel}>Export Raw Data</Text>
