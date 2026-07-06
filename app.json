@@ -20,10 +20,28 @@
         "backgroundColor": "#05050a"
       },
       "package": "com.cardiacdance.monitor",
-      "permissions": []
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
     },
     "plugins": [
       "expo-router",
+      [
+        "react-native-ble-plx",
+        {
+          "neverForLocation": true
+        }
+      ],
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "Camera is used to detect your pulse via fingertip PPG",
+          "enableFrameProcessors": true
+        }
+      ],
       [
         "expo-build-properties",
         {
