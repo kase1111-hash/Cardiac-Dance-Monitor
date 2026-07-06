@@ -132,10 +132,19 @@ Signal ──▶ Quality Gate ──▶ Torus Engine ──▶ Dance Matcher ─
 
 ```bash
 git clone https://github.com/kase1111-hash/cardiac-dance-monitor.git
-cd cardiac-dance-monitor/app
+cd cardiac-dance-monitor
 
 npm install
-npx expo start
+npx expo start        # Expo Go — SIMULATED rhythms only
+```
+
+**To use real hardware** (camera PPG, BLE pulse oximeter, chest
+accelerometer) you need a development or preview build — those are native
+modules that Expo Go can't load. See **[BUILD.md](BUILD.md)** for the
+one-command EAS build and a demo script. In short:
+
+```bash
+eas build --profile preview --platform android   # self-contained demo APK
 ```
 
 Pair a BLE pulse oximeter, or use the camera PPG mode for a spot check.
