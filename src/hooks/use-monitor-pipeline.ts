@@ -20,6 +20,19 @@ import { BaselineService } from '../baseline/baseline-service';
 import { ChangeDetector, type ChangeLevel } from '../baseline/change-detector';
 import { MemoryStorage, type StorageAdapter } from '../session/session-store';
 
+/** One feature window (every DANCE_UPDATE_INTERVAL beats) for trend displays. */
+export interface FeatureSample {
+  /** Total beat count when this window closed */
+  beat: number;
+  /** Rolling-mean BPM at that moment */
+  bpm: number;
+  /** Torus spread (σθ1 + σθ2, fixed normalization) */
+  spread: number;
+}
+
+/** Feature windows kept for trend displays (30 windows ≈ 300 beats). */
+const FEATURE_HISTORY_LENGTH = 30;
+
 export interface PipelineState {
   /** Torus points for display (adaptive normalization) */
   displayPoints: TorusPoint[];
@@ -51,6 +64,8 @@ export interface PipelineState {
   bpm15: number | null;
   /** Dynamic trail length from autocorrelation (respiratory cycle) */
   trailLength: number;
+  /** Rolling feature-window history for trend displays */
+  featureHistory: FeatureSample[];
 }
 
 const DEFAULT_TRAIL_LENGTH = 20;
@@ -118,6 +133,7 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
     isLearningBaseline: true,
     baselineBeatCount: 0,
     trailLength: DEFAULT_TRAIL_LENGTH,
+    featureHistory: [],
   });
 
   // Restore a previously established baseline so it survives app restarts.
@@ -142,6 +158,7 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
   const kappaBuffer = useRef<number[]>([]);
   const displayPoints = useRef<TorusPoint[]>([]);
   const featurePoints = useRef<TorusPoint[]>([]);
+  const featureHistory = useRef<FeatureSample[]>([]);
   const totalBeats = useRef(0);
 
   // Adaptive normalization bounds
@@ -284,6 +301,14 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
           baseline, { kappa: km, gini: g, spread: s },
         );
 
+        // Trend history for the comparison strip
+        featureHistory.current.push({
+          beat: totalBeats.current, bpm: currentBpm ?? 0, spread: s,
+        });
+        if (featureHistory.current.length > FEATURE_HISTORY_LENGTH) {
+          featureHistory.current.shift();
+        }
+
         perBeatUpdate = {
           ...perBeatUpdate,
           danceMatch: match,
@@ -296,6 +321,7 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
           baselineLearningProgress: bs.getLearningProgress(),
           isLearningBaseline: bs.isLearning(),
           baselineBeatCount: bs.getSampleCount(),
+          featureHistory: [...featureHistory.current],
         };
       }
     }
@@ -309,6 +335,7 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
     kappaBuffer.current = [];
     displayPoints.current = [];
     featurePoints.current = [];
+    featureHistory.current = [];
     totalBeats.current = 0;
     adaptiveMin.current = PPI_MIN;
     adaptiveMax.current = PPI_MAX;
@@ -329,6 +356,7 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
       isLearningBaseline: baselineService.current.isLearning(),
       baselineBeatCount: 0,
       trailLength: DEFAULT_TRAIL_LENGTH,
+      featureHistory: [],
     });
   }, []);
 

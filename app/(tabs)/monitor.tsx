@@ -37,6 +37,7 @@ import { TorusDisplay } from '../../src/display/TorusDisplay';
 import { DanceCard } from '../../src/display/DanceCard';
 import { ThreeQuestions } from '../../src/display/ThreeQuestions';
 import { MetricsRow } from '../../src/display/MetricsRow';
+import { ComparisonStrip } from '../../src/display/ComparisonStrip';
 import { BaselineIndicator } from '../../src/display/BaselineIndicator';
 import { sessionStore } from '../../src/session/session-store-instance';
 import { appStorage } from '../../src/session/async-storage-adapter';
@@ -381,6 +382,11 @@ export default function MonitorScreen() {
           size={torusSize}
           trailLength={state.trailLength}
         />
+
+        {/* Rate vs geometry comparison — the "same BPM, different dance" story */}
+        {state.isDancing && (
+          <ComparisonStrip history={state.featureHistory} width={torusSize} />
+        )}
 
         {/* Breath rate display + waveform (chest mode only) */}
         {chestMode && (
