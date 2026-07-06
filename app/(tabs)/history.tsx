@@ -6,7 +6,7 @@ import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, FlatList, TouchableOpacity, Alert,
 } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { sessionStore } from '../../src/session/session-store-instance';
 import type { Session } from '../../src/session/session-types';
 import { getDanceColor, getDanceEmoji } from '../../shared/dance-colors';
@@ -29,6 +29,7 @@ function formatDate(timestamp: number): string {
 }
 
 export default function HistoryScreen() {
+  const router = useRouter();
   const [sessions, setSessions] = useState<Session[]>([]);
 
   useFocusEffect(
@@ -60,6 +61,7 @@ export default function HistoryScreen() {
     return (
       <TouchableOpacity
         style={styles.sessionRow}
+        onPress={() => router.push(`/session/${item.id}`)}
         onLongPress={() => handleDelete(item.id)}
       >
         <Text style={styles.emoji}>{emoji}</Text>
@@ -92,7 +94,8 @@ export default function HistoryScreen() {
         <View style={styles.empty}>
           <Text style={styles.emptyText}>No sessions recorded yet</Text>
           <Text style={styles.emptySubtext}>
-            Sessions are recorded automatically when receiving pulse data
+            Sessions are recorded automatically when receiving pulse data.
+            Tap a session to view details and export; long-press to delete.
           </Text>
         </View>
       ) : (
