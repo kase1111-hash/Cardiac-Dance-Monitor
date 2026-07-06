@@ -37,8 +37,13 @@ import { TorusDisplay } from '../../src/display/TorusDisplay';
 import { DanceCard } from '../../src/display/DanceCard';
 import { ThreeQuestions } from '../../src/display/ThreeQuestions';
 import { MetricsRow } from '../../src/display/MetricsRow';
+import { ComparisonStrip } from '../../src/display/ComparisonStrip';
+import { ValidationCard } from '../../src/display/ValidationCard';
+import { Onboarding } from '../../src/display/Onboarding';
+import { useOnboarding } from '../../src/hooks/use-onboarding';
 import { BaselineIndicator } from '../../src/display/BaselineIndicator';
 import { sessionStore } from '../../src/session/session-store-instance';
+import { appStorage } from '../../src/session/async-storage-adapter';
 import { beatLogger } from '../../src/session/beat-logger';
 
 // NO top-level camera import. CameraPPGView is loaded via conditional
@@ -49,7 +54,9 @@ import { beatLogger } from '../../src/session/beat-logger';
 export default function MonitorScreen() {
   const { width } = useWindowDimensions();
   const torusSize = Math.min(width - 32, 300);
-  const { sourceType, simulatedScenario, baselineResetCounter } = useDataSource();
+  const { sourceType, simulatedScenario, baselineResetCounter, forceBaselineCounter, ppgValidationMode, replayOnboardingCounter } = useDataSource();
+  const { seen: onboardingSeen, markSeen: markOnboardingSeen } = useOnboarding();
+  const [replayOnboarding, setReplayOnboarding] = useState(false);
   const simulated = useSimulatedPulseOx(simulatedScenario, false); // no auto-start
   const camera = useCameraPPG();
   const ble = useInnovoPulseOx();
@@ -62,7 +69,7 @@ export default function MonitorScreen() {
   const handleCameraFrame = useCallback((redMean: number, timestampMs: number) => {
     camera.processFrame(redMean, timestampMs);
   }, [camera]);
-  const { state, processPPI, reset, resetBaseline } = useMonitorPipeline();
+  const { state, processPPI, reset, resetBaseline, forceEstablishBaseline } = useMonitorPipeline(appStorage);
   const { recState, startSession, recordBeat, endSession } = useSessionRecorder();
 
   const sessionStarted = useRef(false);
@@ -126,12 +133,15 @@ export default function MonitorScreen() {
     camera.disconnect();
     ble.disconnect();
 
-    // Connect the selected source
+    // Connect the selected source. In PPG validation mode, BLE and camera
+    // both run so their rolling BPM can be compared live.
     if (sourceType === 'simulated') {
       simulated.connect();
-    } else if (sourceType === 'camera') {
+    }
+    if (sourceType === 'camera' || ppgValidationMode) {
       camera.connect('camera');
-    } else if (sourceType === 'ble_innovo' || sourceType === 'ble') {
+    }
+    if (sourceType === 'ble_innovo' || sourceType === 'ble' || ppgValidationMode) {
       ble.connect();
     }
 
@@ -151,7 +161,7 @@ export default function MonitorScreen() {
         sessionStarted.current = false;
       }
     }
-  }, [sourceType]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sourceType, ppgValidationMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Watch for baseline reset requests from Settings
   useEffect(() => {
@@ -160,6 +170,25 @@ export default function MonitorScreen() {
       resetBaseline();
     }
   }, [baselineResetCounter, resetBaseline]);
+
+  // Watch for "replay intro" requests from Settings
+  const prevReplayCounter = useRef(replayOnboardingCounter);
+  useEffect(() => {
+    if (replayOnboardingCounter > prevReplayCounter.current) {
+      prevReplayCounter.current = replayOnboardingCounter;
+      setReplayOnboarding(true);
+    }
+  }, [replayOnboardingCounter]);
+
+  // Watch for force-establish baseline requests from Settings (dev/demo)
+  const prevForceCounter = useRef(forceBaselineCounter);
+  useEffect(() => {
+    if (forceBaselineCounter > prevForceCounter.current) {
+      prevForceCounter.current = forceBaselineCounter;
+      const ok = forceEstablishBaseline();
+      console.log('BASELINE_FORCE_ESTABLISH:', ok ? 'established' : 'not enough data');
+    }
+  }, [forceBaselineCounter, forceEstablishBaseline]);
 
   // Use latestBeat (includes sequence counter) so every beat triggers the effect,
   // even if two consecutive PPIs happen to have the same numeric value.
@@ -275,8 +304,18 @@ export default function MonitorScreen() {
     }).join(' ');
   };
 
+  // Show the intro on first launch (once storage resolves) or on replay.
+  const showOnboarding = replayOnboarding || onboardingSeen === false;
+
   return (
     <SafeAreaView style={styles.safeArea}>
+      <Onboarding
+        visible={showOnboarding}
+        onDone={() => {
+          setReplayOnboarding(false);
+          markOnboardingSeen();
+        }}
+      />
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
         {/* Disclaimer banner */}
         <View style={styles.disclaimer}>
@@ -326,7 +365,7 @@ export default function MonitorScreen() {
              CameraPPGView itself wraps CameraPPGNative in a try-catch,
              so even if VisionCamera crashes on require(), we get a
              graceful fallback instead of a dead monitor screen. */}
-        {sourceType === 'camera' && (() => {
+        {(sourceType === 'camera' || ppgValidationMode) && (() => {
           try {
             const CameraView = require('../../src/display/CameraPPGView').default;
             return (
@@ -352,6 +391,16 @@ export default function MonitorScreen() {
           }
         })()}
 
+        {/* PPG validation readout (dev): BLE vs camera rolling BPM */}
+        {ppgValidationMode && (
+          <ValidationCard
+            blePPI={ble.latestPPI}
+            bleConnected={ble.connectionStatus === 'connected'}
+            cameraPPI={camera.latestPPI}
+            cameraConnected={camera.connectionStatus === 'connected'}
+          />
+        )}
+
         {/* BPM display */}
         <BPMDisplay bpm={state.bpm} bpm15={state.bpm15} sourceName={pulseOx.sourceName} />
 
@@ -370,6 +419,11 @@ export default function MonitorScreen() {
           size={torusSize}
           trailLength={state.trailLength}
         />
+
+        {/* Rate vs geometry comparison — the "same BPM, different dance" story */}
+        {state.isDancing && (
+          <ComparisonStrip history={state.featureHistory} width={torusSize} />
+        )}
 
         {/* Breath rate display + waveform (chest mode only) */}
         {chestMode && (

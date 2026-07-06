@@ -24,9 +24,8 @@ const SCENARIOS: Array<{ id: RhythmScenario; label: string; description: string 
 ];
 
 export default function SettingsScreen() {
-  const { sourceType, setSourceType, simulatedScenario, setSimulatedScenario, filterSensitivity, setFilterSensitivity, requestBaselineReset } = useDataSource();
+  const { sourceType, setSourceType, simulatedScenario, setSimulatedScenario, filterSensitivity, setFilterSensitivity, requestBaselineReset, requestForceBaseline, ppgValidationMode, setPPGValidationMode, requestReplayOnboarding } = useDataSource();
   const [devMode, setDevMode] = useState(false);
-  const [ppgValidation, setPPGValidation] = useState(false);
 
   const handleResetBaseline = useCallback(() => {
     Alert.alert(
@@ -198,8 +197,8 @@ export default function SettingsScreen() {
         {/* Export */}
         <Text style={styles.sectionHeader}>Export</Text>
         <Text style={styles.infoText}>
-          Export individual sessions from the History tab. Tap a session to view details,
-          then use the share button to export as CSV or PDF.
+          Export the live beat log from the Monitor tab (Export CSV button),
+          or use Export Raw Data below for the most recent recorded session.
         </Text>
         <TouchableOpacity style={[styles.actionRow, { marginTop: 8 }]} onPress={handleExportRawData}>
           <Text style={styles.actionLabel}>Export Raw Data</Text>
@@ -213,18 +212,51 @@ export default function SettingsScreen() {
           <>
             <Text style={[styles.sectionHeader, { color: '#a855f7' }]}>Developer</Text>
             <TouchableOpacity
-              style={[styles.actionRow, ppgValidation && styles.actionRowActive]}
-              onPress={() => setPPGValidation(prev => !prev)}
+              style={[styles.actionRow, ppgValidationMode && styles.actionRowActive]}
+              onPress={() => setPPGValidationMode(!ppgValidationMode)}
             >
               <Text style={styles.actionLabel}>
-                PPG Validation Mode {ppgValidation ? '(ON)' : '(OFF)'}
+                PPG Validation Mode {ppgValidationMode ? '(ON)' : '(OFF)'}
               </Text>
               <Text style={styles.actionDesc}>
-                Run BLE + Camera simultaneously to compare accuracy
+                Run BLE + Camera simultaneously on the Monitor tab and compare
+                rolling BPM live. Requires a dev build with both modules.
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.actionRow}
+              onPress={() => {
+                requestForceBaseline();
+                Alert.alert(
+                  'Baseline Requested',
+                  'The baseline will be frozen from the data collected so far, skipping the 5-minute requirement. Check the Monitor tab — if at least ~20 beats were recorded, change detection is now active.',
+                );
+              }}
+            >
+              <Text style={styles.actionLabel}>Establish Baseline Now</Text>
+              <Text style={styles.actionDesc}>
+                Skip the 5-minute learning period and freeze the baseline from current data.
+                Needs at least ~20 beats on the Monitor tab. For demos: establish during a
+                normal rhythm, then switch scenarios to watch change detection fire.
               </Text>
             </TouchableOpacity>
           </>
         )}
+
+        {/* Intro replay */}
+        <Text style={styles.sectionHeader}>Help</Text>
+        <TouchableOpacity
+          style={styles.actionRow}
+          onPress={() => {
+            requestReplayOnboarding();
+            Alert.alert('Intro', 'Open the Monitor tab to watch the walkthrough of how the torus works.');
+          }}
+        >
+          <Text style={styles.actionLabel}>Replay Intro</Text>
+          <Text style={styles.actionDesc}>
+            Show the walkthrough of what the torus display means
+          </Text>
+        </TouchableOpacity>
 
         {/* About */}
         <Text style={styles.sectionHeader}>About</Text>

@@ -59,7 +59,7 @@ export type SignalQuality = 'good' | 'fair' | 'poor' | 'disconnected';
 
 export interface PulseOxInterface {
   devices: BLEDevice[];
-  connect: (deviceId: string) => void;
+  connect: (deviceId?: string) => void;
   disconnect: () => void;
   connectionStatus: ConnectionStatus;
   latestPPI: number | null;
