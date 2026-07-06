@@ -5,7 +5,7 @@
  * Uses FIXED normalization (PPI_MIN/PPI_MAX) for dance matching features.
  * Uses ADAPTIVE normalization (2nd/98th percentile) for torus display points.
  */
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   toAngle, mengerCurvature, giniCoefficient,
   median, mean, std,
@@ -119,6 +119,23 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
     baselineBeatCount: 0,
     trailLength: DEFAULT_TRAIL_LENGTH,
   });
+
+  // Restore a previously established baseline so it survives app restarts.
+  useEffect(() => {
+    let cancelled = false;
+    baselineService.current.load().then(loaded => {
+      if (loaded && !cancelled) {
+        console.log('BASELINE_LOADED: established', new Date(loaded.recordedAt).toISOString(), 'beats=', loaded.beatCount);
+        setState(prev => ({
+          ...prev,
+          isLearningBaseline: false,
+          baselineLearningProgress: 1,
+          baselineBeatCount: loaded.beatCount,
+        }));
+      }
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   // Ring buffers (mutable refs — no re-render on push)
   const ppiBuffer = useRef<number[]>([]);
@@ -255,7 +272,10 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
         // Baseline learning
         const bs = baselineService.current;
         if (bs.isLearning()) {
-          bs.addSample(km, g, s, currentBpm ?? 0);
+          const justEstablished = bs.addSample(km, g, s, currentBpm ?? 0);
+          if (justEstablished) {
+            void bs.save();
+          }
         }
 
         // Change detection
@@ -325,9 +345,19 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
     }));
   }, []);
 
-  /** Force-establish baseline (for testing — skips duration check). */
+  /** Force-establish baseline (demo/testing — skips duration check). */
   const forceEstablishBaseline = useCallback(() => {
-    return baselineService.current.forceEstablish();
+    const established = baselineService.current.forceEstablish();
+    if (established) {
+      void baselineService.current.save();
+      setState(prev => ({
+        ...prev,
+        isLearningBaseline: false,
+        baselineLearningProgress: 1,
+        baselineBeatCount: baselineService.current.getSampleCount(),
+      }));
+    }
+    return established;
   }, []);
 
   const getBaselineService = useCallback(() => baselineService.current, []);

@@ -39,6 +39,7 @@ import { ThreeQuestions } from '../../src/display/ThreeQuestions';
 import { MetricsRow } from '../../src/display/MetricsRow';
 import { BaselineIndicator } from '../../src/display/BaselineIndicator';
 import { sessionStore } from '../../src/session/session-store-instance';
+import { appStorage } from '../../src/session/async-storage-adapter';
 import { beatLogger } from '../../src/session/beat-logger';
 
 // NO top-level camera import. CameraPPGView is loaded via conditional
@@ -49,7 +50,7 @@ import { beatLogger } from '../../src/session/beat-logger';
 export default function MonitorScreen() {
   const { width } = useWindowDimensions();
   const torusSize = Math.min(width - 32, 300);
-  const { sourceType, simulatedScenario, baselineResetCounter } = useDataSource();
+  const { sourceType, simulatedScenario, baselineResetCounter, forceBaselineCounter } = useDataSource();
   const simulated = useSimulatedPulseOx(simulatedScenario, false); // no auto-start
   const camera = useCameraPPG();
   const ble = useInnovoPulseOx();
@@ -62,7 +63,7 @@ export default function MonitorScreen() {
   const handleCameraFrame = useCallback((redMean: number, timestampMs: number) => {
     camera.processFrame(redMean, timestampMs);
   }, [camera]);
-  const { state, processPPI, reset, resetBaseline } = useMonitorPipeline();
+  const { state, processPPI, reset, resetBaseline, forceEstablishBaseline } = useMonitorPipeline(appStorage);
   const { recState, startSession, recordBeat, endSession } = useSessionRecorder();
 
   const sessionStarted = useRef(false);
@@ -160,6 +161,16 @@ export default function MonitorScreen() {
       resetBaseline();
     }
   }, [baselineResetCounter, resetBaseline]);
+
+  // Watch for force-establish baseline requests from Settings (dev/demo)
+  const prevForceCounter = useRef(forceBaselineCounter);
+  useEffect(() => {
+    if (forceBaselineCounter > prevForceCounter.current) {
+      prevForceCounter.current = forceBaselineCounter;
+      const ok = forceEstablishBaseline();
+      console.log('BASELINE_FORCE_ESTABLISH:', ok ? 'established' : 'not enough data');
+    }
+  }, [forceBaselineCounter, forceEstablishBaseline]);
 
   // Use latestBeat (includes sequence counter) so every beat triggers the effect,
   // even if two consecutive PPIs happen to have the same numeric value.

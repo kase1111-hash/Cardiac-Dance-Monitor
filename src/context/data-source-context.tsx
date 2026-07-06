@@ -18,6 +18,9 @@ interface DataSourceContextValue {
   /** Incremented when user requests baseline reset from Settings */
   baselineResetCounter: number;
   requestBaselineReset: () => void;
+  /** Incremented when user requests force-establish baseline (dev/demo) */
+  forceBaselineCounter: number;
+  requestForceBaseline: () => void;
 }
 
 const DataSourceContext = createContext<DataSourceContextValue>({
@@ -29,6 +32,8 @@ const DataSourceContext = createContext<DataSourceContextValue>({
   setFilterSensitivity: () => {},
   baselineResetCounter: 0,
   requestBaselineReset: () => {},
+  forceBaselineCounter: 0,
+  requestForceBaseline: () => {},
 });
 
 export function DataSourceProvider({ children }: { children: ReactNode }) {
@@ -36,6 +41,7 @@ export function DataSourceProvider({ children }: { children: ReactNode }) {
   const [simulatedScenario, setSimulatedScenario] = useState<RhythmScenario>('nsr');
   const [filterSensitivity, setFilterSensitivity] = useState(0);
   const [baselineResetCounter, setBaselineResetCounter] = useState(0);
+  const [forceBaselineCounter, setForceBaselineCounter] = useState(0);
 
   // Auto-set default sensitivity when source changes
   const handleSetSourceType = (t: DataSourceType) => {
@@ -48,6 +54,10 @@ export function DataSourceProvider({ children }: { children: ReactNode }) {
     setBaselineResetCounter(c => c + 1);
   };
 
+  const requestForceBaseline = () => {
+    setForceBaselineCounter(c => c + 1);
+  };
+
   return (
     <DataSourceContext.Provider value={{
       sourceType,
@@ -58,6 +68,8 @@ export function DataSourceProvider({ children }: { children: ReactNode }) {
       setFilterSensitivity,
       baselineResetCounter,
       requestBaselineReset,
+      forceBaselineCounter,
+      requestForceBaseline,
     }}>
       {children}
     </DataSourceContext.Provider>

@@ -24,7 +24,7 @@ const SCENARIOS: Array<{ id: RhythmScenario; label: string; description: string 
 ];
 
 export default function SettingsScreen() {
-  const { sourceType, setSourceType, simulatedScenario, setSimulatedScenario, filterSensitivity, setFilterSensitivity, requestBaselineReset } = useDataSource();
+  const { sourceType, setSourceType, simulatedScenario, setSimulatedScenario, filterSensitivity, setFilterSensitivity, requestBaselineReset, requestForceBaseline } = useDataSource();
   const [devMode, setDevMode] = useState(false);
   const [ppgValidation, setPPGValidation] = useState(false);
 
@@ -221,6 +221,23 @@ export default function SettingsScreen() {
               </Text>
               <Text style={styles.actionDesc}>
                 Run BLE + Camera simultaneously to compare accuracy
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.actionRow}
+              onPress={() => {
+                requestForceBaseline();
+                Alert.alert(
+                  'Baseline Requested',
+                  'The baseline will be frozen from the data collected so far, skipping the 5-minute requirement. Check the Monitor tab — if at least ~20 beats were recorded, change detection is now active.',
+                );
+              }}
+            >
+              <Text style={styles.actionLabel}>Establish Baseline Now</Text>
+              <Text style={styles.actionDesc}>
+                Skip the 5-minute learning period and freeze the baseline from current data.
+                Needs at least ~20 beats on the Monitor tab. For demos: establish during a
+                normal rhythm, then switch scenarios to watch change detection fire.
               </Text>
             </TouchableOpacity>
           </>
