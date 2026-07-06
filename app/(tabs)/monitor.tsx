@@ -38,6 +38,7 @@ import { DanceCard } from '../../src/display/DanceCard';
 import { ThreeQuestions } from '../../src/display/ThreeQuestions';
 import { MetricsRow } from '../../src/display/MetricsRow';
 import { ComparisonStrip } from '../../src/display/ComparisonStrip';
+import { ValidationCard } from '../../src/display/ValidationCard';
 import { BaselineIndicator } from '../../src/display/BaselineIndicator';
 import { sessionStore } from '../../src/session/session-store-instance';
 import { appStorage } from '../../src/session/async-storage-adapter';
@@ -51,7 +52,7 @@ import { beatLogger } from '../../src/session/beat-logger';
 export default function MonitorScreen() {
   const { width } = useWindowDimensions();
   const torusSize = Math.min(width - 32, 300);
-  const { sourceType, simulatedScenario, baselineResetCounter, forceBaselineCounter } = useDataSource();
+  const { sourceType, simulatedScenario, baselineResetCounter, forceBaselineCounter, ppgValidationMode } = useDataSource();
   const simulated = useSimulatedPulseOx(simulatedScenario, false); // no auto-start
   const camera = useCameraPPG();
   const ble = useInnovoPulseOx();
@@ -128,12 +129,15 @@ export default function MonitorScreen() {
     camera.disconnect();
     ble.disconnect();
 
-    // Connect the selected source
+    // Connect the selected source. In PPG validation mode, BLE and camera
+    // both run so their rolling BPM can be compared live.
     if (sourceType === 'simulated') {
       simulated.connect();
-    } else if (sourceType === 'camera') {
+    }
+    if (sourceType === 'camera' || ppgValidationMode) {
       camera.connect('camera');
-    } else if (sourceType === 'ble_innovo' || sourceType === 'ble') {
+    }
+    if (sourceType === 'ble_innovo' || sourceType === 'ble' || ppgValidationMode) {
       ble.connect();
     }
 
@@ -153,7 +157,7 @@ export default function MonitorScreen() {
         sessionStarted.current = false;
       }
     }
-  }, [sourceType]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sourceType, ppgValidationMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Watch for baseline reset requests from Settings
   useEffect(() => {
@@ -338,7 +342,7 @@ export default function MonitorScreen() {
              CameraPPGView itself wraps CameraPPGNative in a try-catch,
              so even if VisionCamera crashes on require(), we get a
              graceful fallback instead of a dead monitor screen. */}
-        {sourceType === 'camera' && (() => {
+        {(sourceType === 'camera' || ppgValidationMode) && (() => {
           try {
             const CameraView = require('../../src/display/CameraPPGView').default;
             return (
@@ -363,6 +367,16 @@ export default function MonitorScreen() {
             );
           }
         })()}
+
+        {/* PPG validation readout (dev): BLE vs camera rolling BPM */}
+        {ppgValidationMode && (
+          <ValidationCard
+            blePPI={ble.latestPPI}
+            bleConnected={ble.connectionStatus === 'connected'}
+            cameraPPI={camera.latestPPI}
+            cameraConnected={camera.connectionStatus === 'connected'}
+          />
+        )}
 
         {/* BPM display */}
         <BPMDisplay bpm={state.bpm} bpm15={state.bpm15} sourceName={pulseOx.sourceName} />

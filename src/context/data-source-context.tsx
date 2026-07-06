@@ -21,6 +21,9 @@ interface DataSourceContextValue {
   /** Incremented when user requests force-establish baseline (dev/demo) */
   forceBaselineCounter: number;
   requestForceBaseline: () => void;
+  /** Dev: run BLE + camera simultaneously to compare PPG accuracy */
+  ppgValidationMode: boolean;
+  setPPGValidationMode: (on: boolean) => void;
 }
 
 const DataSourceContext = createContext<DataSourceContextValue>({
@@ -34,6 +37,8 @@ const DataSourceContext = createContext<DataSourceContextValue>({
   requestBaselineReset: () => {},
   forceBaselineCounter: 0,
   requestForceBaseline: () => {},
+  ppgValidationMode: false,
+  setPPGValidationMode: () => {},
 });
 
 export function DataSourceProvider({ children }: { children: ReactNode }) {
@@ -42,6 +47,7 @@ export function DataSourceProvider({ children }: { children: ReactNode }) {
   const [filterSensitivity, setFilterSensitivity] = useState(0);
   const [baselineResetCounter, setBaselineResetCounter] = useState(0);
   const [forceBaselineCounter, setForceBaselineCounter] = useState(0);
+  const [ppgValidationMode, setPPGValidationMode] = useState(false);
 
   // Auto-set default sensitivity when source changes
   const handleSetSourceType = (t: DataSourceType) => {
@@ -70,6 +76,8 @@ export function DataSourceProvider({ children }: { children: ReactNode }) {
       requestBaselineReset,
       forceBaselineCounter,
       requestForceBaseline,
+      ppgValidationMode,
+      setPPGValidationMode,
     }}>
       {children}
     </DataSourceContext.Provider>

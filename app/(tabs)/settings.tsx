@@ -24,9 +24,8 @@ const SCENARIOS: Array<{ id: RhythmScenario; label: string; description: string 
 ];
 
 export default function SettingsScreen() {
-  const { sourceType, setSourceType, simulatedScenario, setSimulatedScenario, filterSensitivity, setFilterSensitivity, requestBaselineReset, requestForceBaseline } = useDataSource();
+  const { sourceType, setSourceType, simulatedScenario, setSimulatedScenario, filterSensitivity, setFilterSensitivity, requestBaselineReset, requestForceBaseline, ppgValidationMode, setPPGValidationMode } = useDataSource();
   const [devMode, setDevMode] = useState(false);
-  const [ppgValidation, setPPGValidation] = useState(false);
 
   const handleResetBaseline = useCallback(() => {
     Alert.alert(
@@ -213,14 +212,15 @@ export default function SettingsScreen() {
           <>
             <Text style={[styles.sectionHeader, { color: '#a855f7' }]}>Developer</Text>
             <TouchableOpacity
-              style={[styles.actionRow, ppgValidation && styles.actionRowActive]}
-              onPress={() => setPPGValidation(prev => !prev)}
+              style={[styles.actionRow, ppgValidationMode && styles.actionRowActive]}
+              onPress={() => setPPGValidationMode(!ppgValidationMode)}
             >
               <Text style={styles.actionLabel}>
-                PPG Validation Mode {ppgValidation ? '(ON)' : '(OFF)'}
+                PPG Validation Mode {ppgValidationMode ? '(ON)' : '(OFF)'}
               </Text>
               <Text style={styles.actionDesc}>
-                Run BLE + Camera simultaneously to compare accuracy
+                Run BLE + Camera simultaneously on the Monitor tab and compare
+                rolling BPM live. Requires a dev build with both modules.
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
