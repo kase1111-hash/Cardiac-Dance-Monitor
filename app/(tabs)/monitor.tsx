@@ -39,6 +39,8 @@ import { ThreeQuestions } from '../../src/display/ThreeQuestions';
 import { MetricsRow } from '../../src/display/MetricsRow';
 import { ComparisonStrip } from '../../src/display/ComparisonStrip';
 import { ValidationCard } from '../../src/display/ValidationCard';
+import { Onboarding } from '../../src/display/Onboarding';
+import { useOnboarding } from '../../src/hooks/use-onboarding';
 import { BaselineIndicator } from '../../src/display/BaselineIndicator';
 import { sessionStore } from '../../src/session/session-store-instance';
 import { appStorage } from '../../src/session/async-storage-adapter';
@@ -52,7 +54,9 @@ import { beatLogger } from '../../src/session/beat-logger';
 export default function MonitorScreen() {
   const { width } = useWindowDimensions();
   const torusSize = Math.min(width - 32, 300);
-  const { sourceType, simulatedScenario, baselineResetCounter, forceBaselineCounter, ppgValidationMode } = useDataSource();
+  const { sourceType, simulatedScenario, baselineResetCounter, forceBaselineCounter, ppgValidationMode, replayOnboardingCounter } = useDataSource();
+  const { seen: onboardingSeen, markSeen: markOnboardingSeen } = useOnboarding();
+  const [replayOnboarding, setReplayOnboarding] = useState(false);
   const simulated = useSimulatedPulseOx(simulatedScenario, false); // no auto-start
   const camera = useCameraPPG();
   const ble = useInnovoPulseOx();
@@ -166,6 +170,15 @@ export default function MonitorScreen() {
       resetBaseline();
     }
   }, [baselineResetCounter, resetBaseline]);
+
+  // Watch for "replay intro" requests from Settings
+  const prevReplayCounter = useRef(replayOnboardingCounter);
+  useEffect(() => {
+    if (replayOnboardingCounter > prevReplayCounter.current) {
+      prevReplayCounter.current = replayOnboardingCounter;
+      setReplayOnboarding(true);
+    }
+  }, [replayOnboardingCounter]);
 
   // Watch for force-establish baseline requests from Settings (dev/demo)
   const prevForceCounter = useRef(forceBaselineCounter);
@@ -291,8 +304,18 @@ export default function MonitorScreen() {
     }).join(' ');
   };
 
+  // Show the intro on first launch (once storage resolves) or on replay.
+  const showOnboarding = replayOnboarding || onboardingSeen === false;
+
   return (
     <SafeAreaView style={styles.safeArea}>
+      <Onboarding
+        visible={showOnboarding}
+        onDone={() => {
+          setReplayOnboarding(false);
+          markOnboardingSeen();
+        }}
+      />
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
         {/* Disclaimer banner */}
         <View style={styles.disclaimer}>

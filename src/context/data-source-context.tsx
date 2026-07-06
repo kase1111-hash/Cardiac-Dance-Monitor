@@ -24,6 +24,9 @@ interface DataSourceContextValue {
   /** Dev: run BLE + camera simultaneously to compare PPG accuracy */
   ppgValidationMode: boolean;
   setPPGValidationMode: (on: boolean) => void;
+  /** Incremented when user asks to replay the intro from Settings */
+  replayOnboardingCounter: number;
+  requestReplayOnboarding: () => void;
 }
 
 const DataSourceContext = createContext<DataSourceContextValue>({
@@ -39,6 +42,8 @@ const DataSourceContext = createContext<DataSourceContextValue>({
   requestForceBaseline: () => {},
   ppgValidationMode: false,
   setPPGValidationMode: () => {},
+  replayOnboardingCounter: 0,
+  requestReplayOnboarding: () => {},
 });
 
 export function DataSourceProvider({ children }: { children: ReactNode }) {
@@ -48,6 +53,7 @@ export function DataSourceProvider({ children }: { children: ReactNode }) {
   const [baselineResetCounter, setBaselineResetCounter] = useState(0);
   const [forceBaselineCounter, setForceBaselineCounter] = useState(0);
   const [ppgValidationMode, setPPGValidationMode] = useState(false);
+  const [replayOnboardingCounter, setReplayOnboardingCounter] = useState(0);
 
   // Auto-set default sensitivity when source changes
   const handleSetSourceType = (t: DataSourceType) => {
@@ -64,6 +70,10 @@ export function DataSourceProvider({ children }: { children: ReactNode }) {
     setForceBaselineCounter(c => c + 1);
   };
 
+  const requestReplayOnboarding = () => {
+    setReplayOnboardingCounter(c => c + 1);
+  };
+
   return (
     <DataSourceContext.Provider value={{
       sourceType,
@@ -78,6 +88,8 @@ export function DataSourceProvider({ children }: { children: ReactNode }) {
       requestForceBaseline,
       ppgValidationMode,
       setPPGValidationMode,
+      replayOnboardingCounter,
+      requestReplayOnboarding,
     }}>
       {children}
     </DataSourceContext.Provider>

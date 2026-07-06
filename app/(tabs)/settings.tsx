@@ -24,7 +24,7 @@ const SCENARIOS: Array<{ id: RhythmScenario; label: string; description: string 
 ];
 
 export default function SettingsScreen() {
-  const { sourceType, setSourceType, simulatedScenario, setSimulatedScenario, filterSensitivity, setFilterSensitivity, requestBaselineReset, requestForceBaseline, ppgValidationMode, setPPGValidationMode } = useDataSource();
+  const { sourceType, setSourceType, simulatedScenario, setSimulatedScenario, filterSensitivity, setFilterSensitivity, requestBaselineReset, requestForceBaseline, ppgValidationMode, setPPGValidationMode, requestReplayOnboarding } = useDataSource();
   const [devMode, setDevMode] = useState(false);
 
   const handleResetBaseline = useCallback(() => {
@@ -242,6 +242,21 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           </>
         )}
+
+        {/* Intro replay */}
+        <Text style={styles.sectionHeader}>Help</Text>
+        <TouchableOpacity
+          style={styles.actionRow}
+          onPress={() => {
+            requestReplayOnboarding();
+            Alert.alert('Intro', 'Open the Monitor tab to watch the walkthrough of how the torus works.');
+          }}
+        >
+          <Text style={styles.actionLabel}>Replay Intro</Text>
+          <Text style={styles.actionDesc}>
+            Show the walkthrough of what the torus display means
+          </Text>
+        </TouchableOpacity>
 
         {/* About */}
         <Text style={styles.sectionHeader}>About</Text>
