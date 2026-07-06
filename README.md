@@ -33,6 +33,26 @@ From Paper IV of the Cardiac Torus series, validated on 300 classified recording
 | 🟣 **The Mosh Pit** | Atrial Fibrillation | 3.3 | 0.512 | Chaotic scatter — no repeating pattern |
 | 🟡 **The Stumble** | PVCs / VA | 1.2 | 0.567 | Waltz + sudden launches from ectopic beats |
 
+> The κ/Gini values above are the **Paper IV** figures. The running app uses
+> its own centroids (in `shared/constants.ts`), empirically re-calibrated
+> through the app's fixed-normalization pipeline — they differ from the paper
+> because of the normalization step. Same five dances, app-specific numbers.
+
+---
+
+## In the App
+
+| Screen | What it does |
+|--------|--------------|
+| **Onboarding** | First-run walkthrough of what the torus means (replayable from Settings → Help) |
+| **Monitor** | Live torus trajectory, BPM/SpO₂, dance card, and a **rate-vs-geometry strip** showing how heart rate can stay flat while the rhythm's geometry transforms |
+| **History** | Auto-recorded sessions; tap for detail (transitions, change events) and export as CSV / PDF / raw per-beat CSV |
+| **Settings** | Pick a data source (simulated, BLE, Innovo, camera), tune the quality gate, reset/establish baseline, replay the intro, and hidden dev tools |
+
+**Three data sources:** simulated rhythms (works in Expo Go), a BLE pulse
+oximeter (Innovo iP900BP-B), or the phone's rear camera as a PPG sensor. The
+baseline and session history persist across restarts via AsyncStorage.
+
 ---
 
 ## Three Implementation Tiers
@@ -106,12 +126,12 @@ Signal ──▶ Quality Gate ──▶ Torus Engine ──▶ Dance Matcher ─
 
 | Layer | Technology |
 |-------|-----------|
-| Framework | React Native (iOS + Android) |
-| BLE | `react-native-ble-plx` |
-| Camera PPG | `expo-camera` + red channel peak detection |
+| Framework | React Native + Expo Router (iOS + Android) |
+| BLE | `react-native-ble-plx` (Innovo iP900BP-B via Nordic UART) |
+| Camera PPG | `react-native-vision-camera` frame processor + red-channel peak detection |
 | Math | Pure TS — no external libraries |
-| Storage | AsyncStorage (baseline persistence) |
-| Visualization | React Native SVG for torus display |
+| Storage | AsyncStorage (baseline + session persistence) |
+| Visualization | `react-native-svg` for torus, sparklines, and onboarding |
 
 ### Tier 2 (ESP32)
 
@@ -173,56 +193,44 @@ pio run -t upload
 
 ## Project Structure
 
+This repository is the **Tier 1 phone app**. (Tier 2 firmware and Tier 3
+hardware are described above as the project vision; they are not in this repo.)
+
 ```
 cardiac-dance-monitor/
-├── app/                          # Tier 1: React Native phone app
-│   ├── src/
-│   │   ├── ble/                  # BLE pulse ox connection, PPI parsing
-│   │   ├── camera-ppg/           # Phone camera PPG (spot check mode)
-│   │   ├── torus/                # Core math: angle mapping, curvature, Gini
-│   │   ├── matcher/              # Dance identification (nearest centroid)
-│   │   ├── baseline/             # Personal baseline learning + Mahalanobis
-│   │   ├── display/              # Torus visualization, dance card, 3 questions
-│   │   └── export/               # Session export (PDF/CSV)
-│   ├── App.tsx
-│   └── package.json
+├── app/                          # Expo Router screens
+│   ├── (tabs)/
+│   │   ├── monitor.tsx           # Main screen: torus, dance, comparison strip
+│   │   ├── history.tsx           # Session list (tap → detail)
+│   │   └── settings.tsx          # Data source, baseline, export, dev tools
+│   ├── session/[id].tsx          # Session detail + CSV/PDF/raw export
+│   └── _layout.tsx
 │
-├── firmware/                     # Tier 2: ESP32 + OLED
-│   ├── src/
-│   │   ├── ble_client.cpp        # BLE connection to pulse ox
-│   │   ├── quality_gate.cpp      # PPI range + deviation filtering
-│   │   ├── torus_engine.cpp      # Core math (~50 lines of C)
-│   │   ├── dance_matcher.cpp     # Nearest centroid lookup
-│   │   ├── baseline.cpp          # NVS storage, Mahalanobis distance
-│   │   ├── display.cpp           # SSD1306 OLED rendering (32×32 mini-torus)
-│   │   └── main.cpp              # Setup + main loop (~100 lines)
-│   ├── platformio.ini
-│   └── README.md
+├── shared/                       # Platform-agnostic core (pure TS, tested)
+│   ├── torus-engine.ts           # Angle mapping, Menger curvature, Gini
+│   ├── dance-matcher.ts          # Nearest-centroid dance identification
+│   ├── quality-gate.ts           # PPI range + deviation filtering
+│   ├── constants.ts              # Empirical centroids, PPI bounds, thresholds
+│   └── simulator.ts              # Rhythm simulator (NSR, CHF, AF, PVC, transition)
 │
-├── shared/                       # Shared constants and validation
-│   ├── centroids.json            # The 5 empirical dance centroids
-│   ├── normalization.json        # PPI range bounds, quality thresholds
-│   └── test_vectors.json         # Known-answer test cases for torus math
+├── src/                          # App-specific code
+│   ├── ble/                      # BLE + Innovo Nordic UART protocol
+│   ├── camera/                   # Camera PPG: Butterworth, peak detect, processor
+│   ├── baseline/                 # Baseline learning + change detector (Mahalanobis)
+│   ├── hooks/                    # Data-source + monitor-pipeline + onboarding hooks
+│   ├── display/                  # Torus, dance card, comparison strip, onboarding
+│   ├── session/                  # Recording, CSV export, session store, sharing
+│   ├── sensors/                  # Chest accelerometer for respiratory rate
+│   └── context/                  # Data-source selection state
 │
-├── docs/
-│   ├── PROTOCOL.md               # Full implementation protocol
-│   ├── SCIENCE.md                # Papers I–IV summary: what's validated
-│   ├── PPG_GAP.md                # PPG vs ECG: what we know and don't know
-│   ├── HARDWARE.md               # BOM, wiring diagrams, enclosure STL files
-│   └── SAFETY.md                 # Disclaimers, regulatory considerations
-│
-├── hardware/
-│   ├── enclosure.stl             # 3D-printable case for ESP32 + OLED
-│   ├── schematic.pdf             # Wiring schematic
-│   └── bom.csv                   # Bill of materials with supplier links
-│
-├── test/
-│   ├── simulation/               # Simulated rhythms (NSR, CHF, AF, PVC, SVA)
-│   ├── ecg-validation/           # Comparison against ECG-derived torus features
-│   └── ppg-validation/           # PPG-DaLiA, WESAD, MIMIC-III test harnesses
-│
-└── README.md
+├── plugins/                      # Expo config plugins (Kotlin version fix)
+├── BUILD.md                      # EAS dev/preview build guide
+└── CLAUDE.md                     # Architecture notes for contributors
 ```
+
+Core math lives in `shared/` with no React or native dependencies, so it runs
+under Jest directly (`npm test` — 299 tests across torus math, dance matching,
+baseline, change detection, PPG pipeline, and the app-startup safety net).
 
 ---
 
@@ -278,8 +286,8 @@ PPG-derived pulse intervals (PPI) are not identical to ECG-derived RR intervals.
 
 ## Roadmap
 
-- [ ] **Phase 1:** Phone app with BLE pulse ox pairing + torus visualization + dance ID (data-only, no alerts)
-- [ ] **Phase 2:** Camera PPG spot-check mode + baseline learning + change detection
+- [x] **Phase 1:** Phone app with BLE pulse ox pairing + torus visualization + dance ID (data-only, no alerts)
+- [x] **Phase 2:** Camera PPG mode + baseline learning + change detection
 - [ ] **Phase 3:** ESP32 firmware with OLED display (Tier 2 hard mod)
 - [ ] **Phase 4:** PPG equivalence validation (PPG-DaLiA or WESAD dataset)
 - [ ] **Phase 5:** 3D-printable enclosure + hardware assembly guide
