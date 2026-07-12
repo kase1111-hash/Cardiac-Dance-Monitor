@@ -42,6 +42,7 @@ import { ValidationCard } from '../../src/display/ValidationCard';
 import { Onboarding } from '../../src/display/Onboarding';
 import { useOnboarding } from '../../src/hooks/use-onboarding';
 import { BaselineIndicator } from '../../src/display/BaselineIndicator';
+import { SIGNAL_GAP_MS } from '../../shared/constants';
 import { sessionStore } from '../../src/session/session-store-instance';
 import { appStorage } from '../../src/session/async-storage-adapter';
 import { beatLogger } from '../../src/session/beat-logger';
@@ -74,6 +75,19 @@ export default function MonitorScreen() {
 
   const sessionStarted = useRef(false);
   const prevResetCounter = useRef(baselineResetCounter);
+
+  // Stale-signal detection: beats stopped arriving while the source still
+  // reports "connected" (finger removed, BLE stall the hook hasn't caught yet)
+  const lastBeatAtRef = useRef<number | null>(null);
+  const [signalStale, setSignalStale] = useState(false);
+  useEffect(() => {
+    const id = setInterval(() => {
+      const last = lastBeatAtRef.current;
+      const live = pulseOx.connectionStatus === 'connected';
+      setSignalStale(live && last !== null && Date.now() - last > SIGNAL_GAP_MS);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [pulseOx.connectionStatus]);
 
   // Chest mode state
   const [chestMode, setChestMode] = useState(false);
@@ -148,6 +162,8 @@ export default function MonitorScreen() {
     // Reset pipeline when source actually changes (not on first mount)
     if (prevSourceType.current !== sourceType) {
       prevSourceType.current = sourceType;
+      lastBeatAtRef.current = null;
+      setSignalStale(false);
       reset();
       resetBaseline();
       beatLogger.clear();
@@ -198,8 +214,11 @@ export default function MonitorScreen() {
   useEffect(() => {
     const ppi = latestBeat?.ppi ?? pulseOx.latestPPI;
     if (ppi !== null && ppi !== undefined) {
+      const now = Date.now();
+      lastBeatAtRef.current = now;
+      setSignalStale(false);
       console.log('BEAT', state.totalBeats + 1, 'ppi=', ppi, 'source=', sourceType);
-      processPPI(ppi);
+      processPPI(ppi, now);
 
       // Auto-start session on first valid PPI
       if (!sessionStarted.current) {
@@ -213,7 +232,7 @@ export default function MonitorScreen() {
         : sourceType === 'ble' ? 'ble_hr' as const
         : 'simulated' as const;
       const rawBeat = {
-        timestamp_ms: Date.now(),
+        timestamp_ms: now,
         ppi_ms: ppi,
         source: rawSource,
         raw_ppg: null as number | null,
@@ -230,7 +249,6 @@ export default function MonitorScreen() {
       // Append to CSV beat logger for research export
       const dp = state.displayPoints;
       const lastPt = dp.length > 0 ? dp[dp.length - 1] : null;
-      const now = Date.now();
       const accelBuf = chestMode ? getAccelBuffer() : [];
       beatLogger.append({
         timestamp: new Date().toISOString(),
@@ -331,7 +349,11 @@ export default function MonitorScreen() {
               ? pulseOx.sourceName
               : pulseOx.connectionStatus === 'scanning'
                 ? 'Scanning for sensor...'
-                : 'Disconnected'}
+                : pulseOx.connectionStatus === 'reconnecting'
+                  ? 'Reconnecting...'
+                  : pulseOx.connectionStatus === 'connecting'
+                    ? 'Connecting...'
+                    : 'Disconnected'}
           </Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <TouchableOpacity
@@ -342,9 +364,20 @@ export default function MonitorScreen() {
                 Chest
               </Text>
             </TouchableOpacity>
-            <SignalQualityBadge quality={pulseOx.signalQuality} />
+            <SignalQualityBadge quality={signalStale ? 'poor' : pulseOx.signalQuality} />
           </View>
         </View>
+
+        {/* Signal continuity banner — stale data must never look live */}
+        {(signalStale || pulseOx.connectionStatus === 'reconnecting') && (
+          <View style={styles.signalBanner}>
+            <Text style={styles.signalBannerText}>
+              {pulseOx.connectionStatus === 'reconnecting'
+                ? 'Sensor connection lost — reconnecting...'
+                : 'Signal lost — check sensor contact'}
+            </Text>
+          </View>
+        )}
 
         {/* Chest mode instruction overlay */}
         {showChestOverlay && (
@@ -412,13 +445,16 @@ export default function MonitorScreen() {
         {/* Dance card */}
         <DanceCard match={state.danceMatch} />
 
-        {/* Torus display */}
-        <TorusDisplay
-          points={state.displayPoints}
-          danceName={danceName}
-          size={torusSize}
-          trailLength={state.trailLength}
-        />
+        {/* Torus display — dimmed while the signal is stale so the last
+             reading is visibly not live */}
+        <View style={{ opacity: signalStale || pulseOx.connectionStatus === 'reconnecting' ? 0.35 : 1 }}>
+          <TorusDisplay
+            points={state.displayPoints}
+            danceName={danceName}
+            size={torusSize}
+            trailLength={state.trailLength}
+          />
+        </View>
 
         {/* Rate vs geometry comparison — the "same BPM, different dance" story */}
         {state.isDancing && (
@@ -527,6 +563,18 @@ const styles = StyleSheet.create({
   connectionText: {
     color: '#64748b',
     fontSize: 12,
+  },
+  signalBanner: {
+    backgroundColor: '#2d1a1a',
+    borderRadius: 6,
+    padding: 8,
+    marginBottom: 12,
+    alignItems: 'center',
+  },
+  signalBannerText: {
+    color: '#f87171',
+    fontSize: 12,
+    fontWeight: '600',
   },
   chestToggle: {
     paddingHorizontal: 10,

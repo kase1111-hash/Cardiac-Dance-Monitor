@@ -45,7 +45,7 @@ Dance identification uses **fixed normalization** (PPI_MIN=300, PPI_MAX=1500) be
 ### Key Data Flow
 
 1. Data source hook (`use-simulated-pulse-ox`, `use-innovo-pulse-ox`, or `use-camera-ppg`) produces PPIs
-2. `useMonitorPipeline` hook owns ring buffers, computes torus points with both normalizations, runs dance matching every 10 beats
+2. `useMonitorPipeline` hook is a thin React wrapper around `PipelineCore` (`src/pipeline/pipeline-core.ts`), which owns ring buffers, computes torus points with both normalizations, runs dance matching every 10 beats. The core is React-free and time-injected (every beat carries a timestamp) so `src/replay/session-replay.ts` can replay recorded/exported beat CSVs through the identical code path offline
 3. `BaselineService` learns personal baseline from first 200+ beats over 5+ minutes
 4. `ChangeDetector` computes Mahalanobis distance from baseline every 10 beats
 5. Monitor screen (`app/(tabs)/monitor.tsx`) composes all display components
@@ -57,6 +57,8 @@ Dance identification uses **fixed normalization** (PPI_MIN=300, PPI_MAX=1500) be
   - `ble/` — BLE connection and Innovo pulse ox protocol (Nordic UART, 0xFFF1 characteristic)
   - `camera/` — Camera PPG pipeline: Butterworth filter, peak detector, PPG processor
   - `baseline/` — Baseline learning service and change detector
+  - `pipeline/` — `PipelineCore`: the pure, React-free pipeline shared by the live hook and replay
+  - `replay/` — Session replay harness: parse exported beat CSVs and re-run them through the real pipeline deterministically
   - `hooks/` — React hooks for data sources and monitor pipeline
   - `display/` — UI components: TorusDisplay, DanceCard, ThreeQuestions, MetricsRow, etc.
   - `session/` — Session recording, CSV export, beat logging

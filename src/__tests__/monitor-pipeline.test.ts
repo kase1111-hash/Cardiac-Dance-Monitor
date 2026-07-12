@@ -12,6 +12,8 @@ import {
   DANCE_UPDATE_INTERVAL,
 } from '../../shared/constants';
 import { RhythmSimulator } from '../../shared/simulator';
+import { SignalWatchdog } from '../../shared/signal-watchdog';
+import { SIGNAL_GAP_MS } from '../../shared/constants';
 import type { TorusPoint } from '../../shared/types';
 
 /**
@@ -140,6 +142,63 @@ describe('Monitor pipeline computation', () => {
     expect(result.lastMatch).not.toBeNull();
     expect(result.lastMatch!.bpm).toBeGreaterThan(40);
     expect(result.lastMatch!.bpm).toBeLessThan(200);
+  });
+
+  test('dropout gap: no torus point pairs beats across a signal gap', () => {
+    // Mirrors the gap handling in useMonitorPipeline: when the watchdog
+    // reports a gap, the geometry buffers reset so the first post-gap beat
+    // is never paired with the last pre-gap beat.
+    const watchdog = new SignalWatchdog();
+    const sim = new RhythmSimulator({ scenario: 'nsr' });
+    let ppiBuffer: number[] = [];
+    let points: TorusPoint[] = [];
+
+    let t = 0;
+    const process = (ppi: number, nowMs: number) => {
+      if (watchdog.beat(nowMs)) {
+        ppiBuffer = [];
+        points = [];
+      }
+      ppiBuffer.push(ppi);
+      const n = ppiBuffer.length;
+      if (n < 2) return;
+      points.push({
+        theta1: toAngle(ppiBuffer[n - 2], PPI_MIN, PPI_MAX),
+        theta2: toAngle(ppiBuffer[n - 1], PPI_MIN, PPI_MAX),
+        kappa: 0,
+        beatIndex: n,
+      });
+    };
+
+    // 20 beats, then a 30-second dropout, then 20 more beats
+    for (let i = 0; i < 20; i++) {
+      const ppi = sim.next();
+      t += ppi;
+      process(ppi, t);
+    }
+    expect(points.length).toBe(19); // sanity: n beats → n-1 pairs
+
+    t += 30000; // sensor silent
+    for (let i = 0; i < 20; i++) {
+      const ppi = sim.next();
+      t += ppi;
+      process(ppi, t);
+    }
+
+    // Without gap handling this would be 39 points, one of them spanning
+    // the dropout. With the reset, only the 19 post-gap pairs exist.
+    expect(points.length).toBe(19);
+  });
+
+  test('dropout gap: beats closer than SIGNAL_GAP_MS never trigger a reset', () => {
+    const watchdog = new SignalWatchdog();
+    let t = 0;
+    // Slowest valid rhythm (PPI_MAX = 1500ms) stays far below the gap threshold
+    expect(PPI_MAX).toBeLessThan(SIGNAL_GAP_MS);
+    for (let i = 0; i < 50; i++) {
+      t += PPI_MAX;
+      expect(watchdog.beat(t)).toBe(false);
+    }
   });
 
   test('dual normalization: display and feature points differ', () => {

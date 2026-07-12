@@ -8,6 +8,7 @@
     "ios": "expo start --ios",
     "test": "jest",
     "test:watch": "jest --watch",
+    "replay": "ts-node scripts/replay-session.ts",
     "lint": "expo lint"
   },
   "dependencies": {
