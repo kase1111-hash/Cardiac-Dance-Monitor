@@ -54,7 +54,12 @@ export interface BLEDevice {
   advertisedServices?: string[];
 }
 
-export type ConnectionStatus = 'disconnected' | 'scanning' | 'connecting' | 'connected';
+export type ConnectionStatus =
+  | 'disconnected'
+  | 'scanning'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting';
 export type SignalQuality = 'good' | 'fair' | 'poor' | 'disconnected';
 
 export interface PulseOxInterface {

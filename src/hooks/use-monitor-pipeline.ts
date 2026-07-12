@@ -16,6 +16,7 @@ import {
   DANCE_UPDATE_INTERVAL,
 } from '../../shared/constants';
 import type { TorusPoint, DanceMatch, ChangeStatus } from '../../shared/types';
+import { SignalWatchdog } from '../../shared/signal-watchdog';
 import { BaselineService } from '../baseline/baseline-service';
 import { ChangeDetector, type ChangeLevel } from '../baseline/change-detector';
 import { MemoryStorage, type StorageAdapter } from '../session/session-store';
@@ -161,11 +162,29 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
   const featureHistory = useRef<FeatureSample[]>([]);
   const totalBeats = useRef(0);
 
+  // Detects sensor dropout gaps so torus geometry never spans them
+  const watchdog = useRef(new SignalWatchdog());
+
   // Adaptive normalization bounds
   const adaptiveMin = useRef(PPI_MIN);
   const adaptiveMax = useRef(PPI_MAX);
 
-  const processPPI = useCallback((ppi: number) => {
+  const processPPI = useCallback((ppi: number, timestampMs: number = Date.now()) => {
+    // A dropout gap means this beat and the previous one are not consecutive
+    // heartbeats: pairing them would fabricate a torus point, and the Menger
+    // curvature across the gap would feed phantom features into dance
+    // matching, baseline learning, and change detection. Restart the
+    // geometry buffers; baseline and change-detector state are kept.
+    if (watchdog.current.beat(timestampMs)) {
+      console.log('PIPELINE_GAP: dropout detected — resetting torus geometry');
+      ppiBuffer.current = [];
+      kappaBuffer.current = [];
+      displayPoints.current = [];
+      featurePoints.current = [];
+      adaptiveMin.current = PPI_MIN;
+      adaptiveMax.current = PPI_MAX;
+    }
+
     console.log('PIPELINE_BEAT', totalBeats.current + 1, 'ppi=', ppi);
     ppiBuffer.current.push(ppi);
     if (ppiBuffer.current.length > TORUS_WINDOW) ppiBuffer.current.shift();
@@ -339,6 +358,7 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
     totalBeats.current = 0;
     adaptiveMin.current = PPI_MIN;
     adaptiveMax.current = PPI_MAX;
+    watchdog.current.reset();
     changeDetector.current.reset();
     setState({
       displayPoints: [],

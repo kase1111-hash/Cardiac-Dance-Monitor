@@ -41,6 +41,11 @@ export const CHANGE_NOTICE_SIGMA = 2;     // Mahalanobis distance for notice
 export const CHANGE_ALERT_SIGMA = 3;      // Mahalanobis distance for alert
 export const CHANGE_ALERT_SUSTAIN = 60;   // seconds sustained before alert fires
 
+// Signal continuity
+// No beats for this long = dropout. The pipeline must not pair beats across
+// the gap (spurious torus geometry), and the UI greys out as "signal lost".
+export const SIGNAL_GAP_MS = 5000;
+
 // Display
 export const TORUS_DISPLAY_POINTS = 60;   // max points shown on torus
 export const MINI_TORUS_SIZE = 32;        // pixels (Tier 2 OLED)
