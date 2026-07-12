@@ -12,7 +12,7 @@ import type { StorageAdapter } from '../session/session-store';
 import { BASELINE_MIN_BEATS, BASELINE_DURATION } from '../../shared/constants';
 import { mean, std } from '../../shared/torus-engine';
 
-const BASELINE_KEY = 'personal_baseline';
+export const BASELINE_KEY = 'personal_baseline';
 
 export class BaselineService {
   private storage: StorageAdapter;
@@ -71,11 +71,15 @@ export class BaselineService {
     return this.rawBeats;
   }
 
-  /** Record a raw beat (call every PPI, not just every feature window). */
-  countBeat(): void {
+  /**
+   * Record a raw beat (call every PPI, not just every feature window).
+   * `now` is injectable so session replay can drive time from recorded
+   * timestamps instead of the wall clock.
+   */
+  countBeat(now: number = Date.now()): void {
     if (this.frozen) return;
     if (this.learningStartTime === null) {
-      this.learningStartTime = Date.now();
+      this.learningStartTime = now;
     }
     this.rawBeats++;
   }
@@ -85,7 +89,7 @@ export class BaselineService {
    * Called every DANCE_UPDATE_INTERVAL beats with the current features.
    * Returns true if baseline was just established on this call.
    */
-  addSample(kappa: number, gini: number, spread: number, bpm: number): boolean {
+  addSample(kappa: number, gini: number, spread: number, bpm: number, now: number = Date.now()): boolean {
     if (this.frozen) return false;
 
     this.kappaValues.push(kappa);
@@ -95,13 +99,13 @@ export class BaselineService {
     this.totalSamples++;
 
     // Check if we've met the threshold (using raw beat count, not feature samples)
-    const elapsedMs = this.learningStartTime ? Date.now() - this.learningStartTime : 0;
+    const elapsedMs = this.learningStartTime ? now - this.learningStartTime : 0;
     const elapsedSeconds = elapsedMs / 1000;
     const meetsBeats = this.rawBeats >= BASELINE_MIN_BEATS;
     const meetsDuration = elapsedSeconds >= BASELINE_DURATION;
 
     if (meetsBeats && meetsDuration) {
-      this.establish();
+      this.establish(now);
       return true;
     }
 
@@ -109,7 +113,7 @@ export class BaselineService {
   }
 
   /** Establish the baseline from accumulated samples and freeze it. */
-  private establish(): void {
+  private establish(now: number = Date.now()): void {
     this.baseline = {
       kappaMean: mean(this.kappaValues),
       kappaSd: std(this.kappaValues),
@@ -118,7 +122,7 @@ export class BaselineService {
       spreadMean: mean(this.spreadValues),
       spreadSd: std(this.spreadValues),
       bpmMean: Math.round(mean(this.bpmValues)),
-      recordedAt: Date.now(),
+      recordedAt: now,
       beatCount: this.rawBeats,
     };
     this.frozen = true;
