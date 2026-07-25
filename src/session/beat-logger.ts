@@ -32,6 +32,20 @@ export interface BeatLogRow {
 const CSV_HEADER = 'timestamp,beat_number,ppi_ms,source,spo2,bpm,pi_percent,dance_name,dance_confidence,kappa,gini,sigma,theta1,theta2,trail_length,motion_artifact,breath_rate,ibi_ms';
 
 /**
+ * Quote a CSV field if it contains a comma, quote or newline (RFC 4180).
+ *
+ * No field written today contains one — dance names and source ids are all
+ * plain — so this changes nothing about current exports. It exists so that
+ * adding any free-text column later (a device name, a note, a localized
+ * label) cannot silently corrupt every row after it.
+ */
+function csvEscape(value: string | number | boolean): string {
+  const s = String(value);
+  if (!/[",\n\r]/.test(s)) return s;
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
+/**
  * Rows retained in memory (~2.5 hours at 70 BPM).
  * Unbounded growth meant an overnight recording accumulated hundreds of
  * thousands of row objects, and toCSV() then built one giant string via
@@ -72,7 +86,9 @@ class BeatLogger {
       lines.push([
         r.timestamp,
         r.beat_number,
-        r.ppi_ms,
+        // Sub-sample peak interpolation makes PPIs fractional; one decimal
+        // preserves that precision without unbounded float digits.
+        r.ppi_ms.toFixed(1),
         r.source,
         r.spo2 ?? '',
         r.bpm ?? '',
@@ -88,7 +104,7 @@ class BeatLogger {
         r.motion_artifact,
         r.breath_rate ?? '',
         r.ibi_ms ?? '',
-      ].join(','));
+      ].map(csvEscape).join(','));
     }
     return lines.join('\n') + '\n';
   }

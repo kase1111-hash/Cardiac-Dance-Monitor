@@ -119,6 +119,47 @@ describe('Clinical validation through the real shipping pipeline', () => {
     expect(result.gapCount).toBe(0);
   });
 
+  test('camera sampling does not fabricate variability in a metronomic rhythm', () => {
+    // REGRESSION: peaks snapped to the nearest 30fps frame quantized intervals
+    // to a 33.3ms grid, injecting ~13.6ms of artificial beat-to-beat variation
+    // into a rhythm that has almost none — enough to flip a near-metronomic
+    // CHF rhythm from "The Lock-Step" to "The Waltz" on the camera source.
+    const { PPGProcessor } = require('../camera/ppg-processor');
+    const fps = 30;
+    const proc = new PPGProcessor(fps);
+    const emitted: number[] = [];
+    proc.onPPI = (p: number) => emitted.push(p);
+
+    // Perfectly metronomic 750ms beats rendered as a PPG waveform at 30fps.
+    const beatTimes: number[] = [];
+    for (let i = 0; i < 60; i++) beatTimes.push(2000 + i * 750);
+    const dt = 1000 / fps;
+    for (let t = 0; t < beatTimes[beatTimes.length - 1] + 2000; t += dt) {
+      let v = 0;
+      for (const bt of beatTimes) {
+        const d = (t - bt) / 120;
+        if (Math.abs(d) < 4) v += Math.exp(-d * d);
+      }
+      proc.processFrame(200 + 12 * v, t);
+    }
+
+    expect(emitted.length).toBeGreaterThan(50);
+    // Drop the final interval: this synthetic waveform stops abruptly, and the
+    // bandpass rings on that artificial edge. A real signal keeps going.
+    const interior = emitted.slice(0, -1);
+    // Every recovered interval must be close to 750ms. Frame quantization
+    // alone would scatter these across 733/766/800ms.
+    for (const ppi of interior) {
+      expect(Math.abs(ppi - 750)).toBeLessThan(10);
+    }
+    // And the spread must be far below the 33.3ms frame grid.
+    const mean = interior.reduce((a, b) => a + b, 0) / interior.length;
+    const sd = Math.sqrt(
+      interior.reduce((a, b) => a + (b - mean) ** 2, 0) / interior.length,
+    );
+    expect(sd).toBeLessThan(5);
+  });
+
   test('dropout gaps are not manufactured by beat rejection', async () => {
     // Mass rejection creates >5s holes between admitted beats, which the
     // signal watchdog then misreads as sensor dropouts and wipes the torus.

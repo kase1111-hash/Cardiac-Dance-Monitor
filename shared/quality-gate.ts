@@ -53,6 +53,13 @@ export class QualityGate {
   private readonly windowSize = 30;
 
   /**
+   * Fractional deviation from the running median beyond which a beat is
+   * flagged as "not clean". Affects the signal-quality badge only — never
+   * pipeline admission — so it is safe to expose as a user setting.
+   */
+  constructor(private readonly deviationMax: number = PPI_DEVIATION_MAX) {}
+
+  /**
    * Check a PPI value. Returns true if it should be fed to the pipeline.
    * Deviant-but-plausible beats return true and are counted against quality.
    */
@@ -74,7 +81,7 @@ export class QualityGate {
     let deviant = false;
     if (this.recent.length > 0) {
       const med = this.getRunningMedian();
-      deviant = Math.abs(ppi - med) > PPI_DEVIATION_MAX * med;
+      deviant = Math.abs(ppi - med) > this.deviationMax * med;
     }
 
     this.pushRecent(ppi);

@@ -27,6 +27,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { Platform, PermissionsAndroid, Alert } from 'react-native';
 import { BLEPPGHandler, INNOVO_PPG_SAMPLE_RATE } from './ble-ppg-handler';
 import { QualityGate } from '../../shared/quality-gate';
+import { PPI_DEVIATION_MAX } from '../../shared/constants';
 import { ReconnectPolicy } from './reconnect-policy';
 import type {
   PulseOxInterface,
@@ -154,7 +155,14 @@ function useLazyRef<T>(factory: () => T): { current: T } {
   return ref as { current: T };
 }
 
-export function useInnovoPulseOx(): InnovoPulseOxResult {
+/**
+ * @param deviationTolerance - Fractional deviation from the running median
+ *   beyond which a beat counts against the signal-quality badge. Does not
+ *   affect which beats reach the pipeline. Defaults to PPI_DEVIATION_MAX.
+ */
+export function useInnovoPulseOx(
+  deviationTolerance: number = PPI_DEVIATION_MAX,
+): InnovoPulseOxResult {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [latestPPI, setLatestPPI] = useState<number | null>(null);
   const [latestBeat, setLatestBeat] = useState<PPIBeat | null>(null);
@@ -167,7 +175,7 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
   // Lazy-init: plain useRef(new X()) constructs a throwaway object on every
   // render (BLEPPGHandler builds a PPGProcessor + Butterworth coefficients).
   const handler = useLazyRef(() => new BLEPPGHandler(INNOVO_PPG_SAMPLE_RATE));
-  const qualityGate = useLazyRef(() => new QualityGate());
+  const qualityGate = useLazyRef(() => new QualityGate(deviationTolerance));
   const reconnectPolicy = useLazyRef(() => new ReconnectPolicy());
 
   const seqRef = useRef(0);
@@ -405,7 +413,7 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     handler.current.reset();
     // Fresh gate too: a stale running median from before the dropout would
     // mis-flag the first beats after reconnect if the rate changed meanwhile.
-    qualityGate.current = new QualityGate();
+    qualityGate.current = new QualityGate(deviationTolerance);
     wireHandler();
 
     const delay = reconnectPolicy.current.nextDelayMs();
@@ -473,7 +481,7 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     }
 
     handler.current.reset();
-    qualityGate.current = new QualityGate();
+    qualityGate.current = new QualityGate(deviationTolerance);
     reconnectPolicy.current.reset();
     wireHandler();
 

@@ -56,12 +56,12 @@ import { beatLogger } from '../../src/session/beat-logger';
 export default function MonitorScreen() {
   const { width } = useWindowDimensions();
   const torusSize = Math.min(width - 32, 300);
-  const { sourceType, simulatedScenario, baselineResetCounter, forceBaselineCounter, ppgValidationMode, replayOnboardingCounter } = useDataSource();
+  const { sourceType, simulatedScenario, baselineResetCounter, forceBaselineCounter, ppgValidationMode, replayOnboardingCounter, filterSensitivity } = useDataSource();
   const { seen: onboardingSeen, markSeen: markOnboardingSeen } = useOnboarding();
   const [replayOnboarding, setReplayOnboarding] = useState(false);
   const simulated = useSimulatedPulseOx(simulatedScenario, false); // no auto-start
-  const camera = useCameraPPG();
-  const ble = useInnovoPulseOx();
+  const camera = useCameraPPG(filterSensitivity);
+  const ble = useInnovoPulseOx(filterSensitivity);
 
   // Select active source based on sourceType
   const pulseOx = sourceType === 'camera' ? camera
@@ -159,6 +159,21 @@ export default function MonitorScreen() {
       stopChestAccel();
     };
   }, []);
+
+  // Changing the simulated rhythm must clear the pipeline too. The simulator
+  // restarts in ~50ms — well under SIGNAL_GAP_MS — so the watchdog does not
+  // see a gap, and ~60 beats of the previous scenario stayed in the torus and
+  // curvature buffers, blending into the new scenario's dance match.
+  const prevScenario = useRef(simulatedScenario);
+  useEffect(() => {
+    if (prevScenario.current === simulatedScenario) return;
+    prevScenario.current = simulatedScenario;
+    if (sourceType !== 'simulated') return;
+    lastBeatAtRef.current = null;
+    setSignalStale(false);
+    reset();
+    beatLogger.clear();
+  }, [simulatedScenario, sourceType, reset]);
 
   // Connect/disconnect all sources when sourceType changes + reset pipeline
   const prevSourceType = useRef(sourceType);

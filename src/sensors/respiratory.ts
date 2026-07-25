@@ -15,8 +15,10 @@ import type { AccelSample } from './chest-accel';
 // Moving average window: 4 seconds at 25 Hz = 100 samples
 const MA_WINDOW = 100;
 
-// Minimum spacing between breaths: 2 seconds at 25 Hz = 50 samples
-const MIN_PEAK_SPACING_SAMPLES = 50;
+// Minimum spacing between breaths: 2 seconds.
+// NOTE: this caps detectable rate at 30 breaths/min, so tachypnea above that
+// is reported as a lower rate rather than flagged. Widening it requires
+// re-tuning the peak detector against real chest-accelerometer recordings.
 const MIN_PEAK_SPACING_MS = 2000;
 
 // Maximum expected breath period: 10 seconds (6 breaths/min)
@@ -100,8 +102,10 @@ export function detectBreathPeaks(
         if (timeSinceLast < MIN_PEAK_SPACING_MS) continue;
       }
 
-      // Require minimum amplitude (reject noise near zero)
-      if (Math.abs(filtered[i]) < 0.001) continue;
+      // Require minimum amplitude above baseline. Using Math.abs() here let a
+      // local maximum sitting at, say, -0.5 (deep inside an exhalation trough)
+      // pass the amplitude test and be counted as an inhalation peak.
+      if (filtered[i] < 0.001) continue;
 
       peaks.push({
         timestamp: samples[i].timestamp,
