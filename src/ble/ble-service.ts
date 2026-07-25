@@ -62,12 +62,30 @@ export type ConnectionStatus =
   | 'reconnecting';
 export type SignalQuality = 'good' | 'fair' | 'poor' | 'disconnected';
 
+/**
+ * A PPI beat carrying a unique sequence number.
+ *
+ * REQUIRED for every source. PPIs are integer milliseconds, so two consecutive
+ * beats frequently have the same numeric value — especially in regular rhythms.
+ * Exposing only `latestPPI` means React's Object.is bailout drops those beats
+ * silently: no re-render, no effect, the beat never reaches the pipeline. That
+ * loss is inversely proportional to rhythm regularity (~6.5% of beats in a
+ * metronomic rhythm), which biases steady rhythms toward looking irregular.
+ * The sequence number guarantees a new object identity on every beat.
+ */
+export interface PPIBeat {
+  ppi: number;
+  seq: number;
+}
+
 export interface PulseOxInterface {
   devices: BLEDevice[];
   connect: (deviceId?: string) => void;
   disconnect: () => void;
   connectionStatus: ConnectionStatus;
   latestPPI: number | null;
+  /** Latest beat with sequence number — consumers MUST use this, not latestPPI. */
+  latestBeat: PPIBeat | null;
   signalQuality: SignalQuality;
   /** Source identifier for display */
   sourceName: string;

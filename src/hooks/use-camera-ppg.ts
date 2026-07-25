@@ -16,7 +16,7 @@
 import { useState, useRef, useCallback } from 'react';
 import { PPGProcessor } from '../camera/ppg-processor';
 import { QualityGate } from '../../shared/quality-gate';
-import type { PulseOxInterface, SignalQuality, ConnectionStatus } from '../ble/ble-service';
+import type { PulseOxInterface, SignalQuality, ConnectionStatus, PPIBeat } from '../ble/ble-service';
 
 const VALIDATION_PEAKS = 5;  // peaks before PPI stream is considered valid
 const CAMERA_FPS = 30;
@@ -35,6 +35,7 @@ export interface CameraPPGResult extends PulseOxInterface {
 export function useCameraPPG(): CameraPPGResult {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [latestPPI, setLatestPPI] = useState<number | null>(null);
+  const [latestBeat, setLatestBeat] = useState<PPIBeat | null>(null);
   const [signalQuality, setSignalQuality] = useState<SignalQuality>('disconnected');
   const [ppgState, setPPGState] = useState<CameraPPGState>('idle');
   const [peakCount, setPeakCount] = useState(0);
@@ -42,13 +43,19 @@ export function useCameraPPG(): CameraPPGResult {
   const processor = useRef(new PPGProcessor(CAMERA_FPS));
   const qualityGate = useRef(new QualityGate());
   const isActive = useRef(false);
+  const seqRef = useRef(0);
 
   // Set up PPI callback
   const setupProcessor = useCallback(() => {
     processor.current.onPPI = (ppi: number) => {
       const valid = qualityGate.current.check(ppi);
       if (valid) {
+        seqRef.current++;
         setLatestPPI(ppi);
+        // Sequence number guarantees a new identity even when two consecutive
+        // PPIs are numerically equal — otherwise React bails out and the beat
+        // is silently lost.
+        setLatestBeat({ ppi, seq: seqRef.current });
       }
       setSignalQuality(qualityGate.current.getQualityLevel());
     };
@@ -71,6 +78,7 @@ export function useCameraPPG(): CameraPPGResult {
     setConnectionStatus('disconnected');
     setPPGState('idle');
     setLatestPPI(null);
+    setLatestBeat(null);
     setSignalQuality('disconnected');
     setPeakCount(0);
   }, []);
@@ -93,6 +101,7 @@ export function useCameraPPG(): CameraPPGResult {
     disconnect,
     connectionStatus,
     latestPPI,
+    latestBeat,
     signalQuality,
     sourceName: 'Camera PPG',
     ppgState,

@@ -206,19 +206,22 @@ export default function MonitorScreen() {
     }
   }, [forceBaselineCounter, forceEstablishBaseline]);
 
-  // Use latestBeat (includes sequence counter) so every beat triggers the effect,
-  // even if two consecutive PPIs happen to have the same numeric value.
-  const latestBeat = 'latestBeat' in pulseOx ? (pulseOx as any).latestBeat : null;
+  // latestBeat carries a sequence counter, so every beat changes identity and
+  // triggers this effect — even when two consecutive PPIs are numerically
+  // equal. Every source is required to provide it (see PulseOxInterface).
+  const latestBeat = pulseOx.latestBeat;
 
   // Feed PPIs from pulse source into the pipeline
   useEffect(() => {
-    const ppi = latestBeat?.ppi ?? pulseOx.latestPPI;
+    const ppi = latestBeat?.ppi;
     if (ppi !== null && ppi !== undefined) {
       const now = Date.now();
       lastBeatAtRef.current = now;
       setSignalStale(false);
-      console.log('BEAT', state.totalBeats + 1, 'ppi=', ppi, 'source=', sourceType);
-      processPPI(ppi, now);
+
+      // `snap` is this beat's state. Everything logged below must read from it
+      // rather than from `state`, which is still the previous beat's snapshot.
+      const snap = processPPI(ppi, now);
 
       // Auto-start session on first valid PPI
       if (!sessionStarted.current) {
@@ -238,34 +241,34 @@ export default function MonitorScreen() {
         raw_ppg: null as number | null,
         spo2: (sourceType === 'ble_innovo' ? ble.spo2 : null) as number | null,
         device_bpm: (sourceType === 'ble_innovo' ? ble.deviceBPM : null) as number | null,
-        baseline_distance: state.changeStatus.level !== 'learning'
-          ? state.changeStatus.mahalanobisDistance : null,
-        trail_length: state.trailLength,
+        baseline_distance: snap.changeStatus.level !== 'learning'
+          ? snap.changeStatus.mahalanobisDistance : null,
+        trail_length: snap.trailLength,
       };
 
       // Record beat for session (with raw data)
-      recordBeat(state.danceMatch, rawBeat);
+      recordBeat(snap.danceMatch, rawBeat);
 
       // Append to CSV beat logger for research export
-      const dp = state.displayPoints;
+      const dp = snap.displayPoints;
       const lastPt = dp.length > 0 ? dp[dp.length - 1] : null;
       const accelBuf = chestMode ? getAccelBuffer() : [];
       beatLogger.append({
-        timestamp: new Date().toISOString(),
-        beat_number: state.totalBeats + 1,
+        timestamp: new Date(now).toISOString(),
+        beat_number: snap.totalBeats,
         ppi_ms: ppi,
         source: sourceType,
         spo2: sourceType === 'ble_innovo' ? ble.spo2 : null,
-        bpm: state.bpm,
+        bpm: snap.bpm,
         pi_percent: sourceType === 'ble_innovo' ? ble.perfusionIndex : null,
-        dance_name: state.danceMatch?.name ?? null,
-        dance_confidence: state.danceMatch ? Math.round(state.danceMatch.confidence * 100) : null,
-        kappa: state.kappaMedian,
-        gini: state.gini,
-        sigma: state.spread,
+        dance_name: snap.danceMatch?.name ?? null,
+        dance_confidence: snap.danceMatch ? Math.round(snap.danceMatch.confidence * 100) : null,
+        kappa: snap.kappaMedian,
+        gini: snap.gini,
+        sigma: snap.spread,
         theta1: lastPt?.theta1 ?? 0,
         theta2: lastPt?.theta2 ?? 0,
-        trail_length: state.trailLength,
+        trail_length: snap.trailLength,
         motion_artifact: chestMode ? detectMotionArtifact(now, ppi) : false,
         breath_rate: chestMode ? getBreathRate(accelBuf) : null,
         ibi_ms: chestMode ? getLatestIBI(accelBuf) : null,

@@ -40,13 +40,24 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
     return () => { cancelled = true; };
   }, []);
 
-  const processPPI = useCallback((ppi: number, timestampMs: number = Date.now()) => {
+  /**
+   * Feed one beat through the pipeline.
+   *
+   * Returns the NEW state snapshot. Callers that log or record must use the
+   * returned value, not the `state` from their render closure — that closure
+   * still holds the pre-beat snapshot, which silently paired beat n's PPI
+   * with beat n-1's metrics in every exported row.
+   */
+  const processPPI = useCallback((
+    ppi: number,
+    timestampMs: number = Date.now(),
+  ): PipelineState => {
     const snapshot = core.current!.processBeat(ppi, timestampMs);
     if (snapshot.baselineJustEstablished) {
       void baselineService.current!.save();
     }
-    console.log('SET_STATE beat=', snapshot.totalBeats, 'pts=', snapshot.displayPoints.length);
     setState(snapshot);
+    return snapshot;
   }, []);
 
   const reset = useCallback(() => {
