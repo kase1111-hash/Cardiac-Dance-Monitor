@@ -59,8 +59,15 @@ export class BLEPPGHandler {
   handleNotification(data: Uint8Array, timestampMs: number): void {
     const packet = parseInnovoPacket(data);
     if (packet === null) {
-      // Fall back to legacy 2-byte parse for backward compatibility
-      this.handleLegacyPacket(data, timestampMs);
+      // Legacy fallback is for 2-byte frames ONLY. Accepting any length >= 2
+      // meant an unrecognised frame (e.g. a status packet with a different
+      // trailer) was read as a PPG sample: byte 0 != 0x01 looked like "finger
+      // removed", which reset the filter and peak detector roughly once a
+      // second, so no PPI was ever produced. Per the protocol doc: discard
+      // anything that isn't a recognised frame.
+      if (data.length === 2) {
+        this.handleLegacyPacket(data, timestampMs);
+      }
       return;
     }
 

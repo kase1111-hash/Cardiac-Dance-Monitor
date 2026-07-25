@@ -120,3 +120,48 @@ function seedRandom(seed: number): () => number {
     return s / 2147483647;
   };
 }
+
+describe('Timestamp alignment', () => {
+  const { pairByTimestamp } = require('../camera/equivalence-analyzer');
+
+  test('a dropped camera beat does not shift every later pair', () => {
+    // Same rhythm on both streams, but the camera misses beat #3.
+    const ble: { ppi: number; timestamp: number }[] = [];
+    const cam: { ppi: number; timestamp: number }[] = [];
+    let t = 10_000;
+    const ppis = [800, 810, 790, 805, 795, 800, 815];
+    ppis.forEach((p, i) => {
+      t += p;
+      ble.push({ ppi: p, timestamp: t });
+      if (i !== 3) cam.push({ ppi: p, timestamp: t + 20 }); // 20ms lag
+    });
+
+    const paired = pairByTimestamp(ble, cam);
+    // Index pairing would misalign everything after the drop; timestamp
+    // pairing keeps each real heartbeat matched to itself.
+    expect(paired.ble).toEqual(paired.camera);
+    expect(paired.ble.length).toBe(ppis.length - 1);
+  });
+
+  test('a late-starting camera stream still aligns', () => {
+    const ble: { ppi: number; timestamp: number }[] = [];
+    const cam: { ppi: number; timestamp: number }[] = [];
+    let t = 10_000;
+    const ppis = [800, 800, 800, 800, 800];
+    ppis.forEach((p, i) => {
+      t += p;
+      ble.push({ ppi: p, timestamp: t });
+      if (i >= 2) cam.push({ ppi: p, timestamp: t + 15 }); // camera starts late
+    });
+
+    const paired = pairByTimestamp(ble, cam);
+    expect(paired.ble.length).toBe(3);
+    expect(paired.ble).toEqual(paired.camera);
+  });
+
+  test('beats too far apart in time are not paired', () => {
+    const ble = [{ ppi: 800, timestamp: 1000 }];
+    const cam = [{ ppi: 800, timestamp: 9000 }];
+    expect(pairByTimestamp(ble, cam).ble.length).toBe(0);
+  });
+});

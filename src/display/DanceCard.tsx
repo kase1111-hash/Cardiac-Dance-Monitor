@@ -18,7 +18,12 @@ interface Props {
 }
 
 export function DanceCard({ match }: Props) {
-  const isUncertain = !match || match.confidence < CONFIDENCE_UNCERTAIN;
+  // Number.isFinite guard: a NaN confidence fails `< CONFIDENCE_UNCERTAIN`, so
+  // a poisoned match rendered as a confident dance at "NaN%" instead of
+  // degrading to Uncertain — the opposite of the intended safety net.
+  const isUncertain = !match
+    || !Number.isFinite(match.confidence)
+    || match.confidence < CONFIDENCE_UNCERTAIN;
   const displayName = isUncertain ? 'Uncertain' : match!.name;
   const color = isUncertain ? '#64748b' : getDanceColor(displayName);
   const emoji = isUncertain ? '\u{2753}' : getDanceEmoji(displayName);

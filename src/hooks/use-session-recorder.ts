@@ -32,6 +32,7 @@ export function useSessionRecorder() {
     beatCount: number;
     danceMatches: DanceMatch[];
     danceTransitions: Array<{ timestamp: number; from: string; to: string }>;
+    changeEvents: Session['changeEvents'];
     lastDance: string | null;
     bpmAccum: number[];
     kappaAccum: number[];
@@ -48,6 +49,7 @@ export function useSessionRecorder() {
       beatCount: 0,
       danceMatches: [],
       danceTransitions: [],
+      changeEvents: [],
       lastDance: null,
       bpmAccum: [],
       kappaAccum: [],
@@ -60,6 +62,30 @@ export function useSessionRecorder() {
       beatCount: 0,
       startTime: now,
       elapsedMs: 0,
+    });
+  }, []);
+
+  /**
+   * Record a change-detection transition for this session.
+   *
+   * Sessions previously always reported "changeEvents: []", so every export
+   * and every Session Detail screen claimed "no sustained deviation from
+   * baseline" regardless of what the detector observed — for an app whose
+   * stated primary value is change detection.
+   */
+  const recordChangeEvent = useCallback((
+    level: 'notice' | 'alert',
+    distance: number,
+    danceBefore: string,
+    danceAfter: string,
+  ) => {
+    if (!sessionData.current) return;
+    sessionData.current.changeEvents.push({
+      timestamp: Date.now(),
+      level,
+      distance,
+      danceBefore,
+      danceAfter,
     });
   }, []);
 
@@ -133,7 +159,7 @@ export function useSessionRecorder() {
       endTime: now,
       dominantDance,
       beatCount: sd.beatCount,
-      changeEvents: [], // Phase 2
+      changeEvents: sd.changeEvents,
       danceTransitions: sd.danceTransitions,
       summaryStats: {
         bpmMean: Math.round(mean(sd.bpmAccum)),
@@ -159,6 +185,7 @@ export function useSessionRecorder() {
     recState,
     startSession,
     recordBeat,
+    recordChangeEvent,
     endSession,
   };
 }

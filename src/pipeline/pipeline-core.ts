@@ -42,6 +42,14 @@ export interface FeatureSample {
 /** Feature windows kept for trend displays (30 windows ≈ 300 beats). */
 const FEATURE_HISTORY_LENGTH = 30;
 
+/**
+ * Minimum curvatures before features are trustworthy enough to drive dance
+ * matching, baseline learning, or change detection. Half the full window:
+ * high enough that `spread` is comparable to a settled window, low enough
+ * that identification still appears within ~30 beats of a fresh start.
+ */
+const MIN_FEATURE_WINDOW = 30;
+
 export interface PipelineState {
   /** Torus points for display (adaptive normalization) */
   displayPoints: TorusPoint[];
@@ -79,6 +87,12 @@ export interface PipelineState {
   featureHistory: FeatureSample[];
   /** Dropout gaps detected (torus geometry restarted after each) */
   gapCount: number;
+  /**
+   * True when a feature window was due but curvature was degenerate, so no
+   * dance could be computed. Distinct from "still warming up": the UI must
+   * show an unknown state rather than the previous window's reading.
+   */
+  featuresUnavailable: boolean;
 }
 
 const DEFAULT_TRAIL_LENGTH = 20;
@@ -180,6 +194,7 @@ export class PipelineCore {
       trailLength: DEFAULT_TRAIL_LENGTH,
       featureHistory: [],
       gapCount: this.gapCount,
+      featuresUnavailable: false,
     };
   }
 
@@ -198,6 +213,7 @@ export class PipelineCore {
     // curvature across the gap would feed phantom features into dance
     // matching, baseline learning, and change detection. Restart the
     // geometry buffers; baseline and change-detector state are kept.
+    const gapMs = this.watchdog.msSinceLastBeat(timestampMs);
     if (this.watchdog.beat(timestampMs)) {
       if (this.verbose) console.log('PIPELINE_GAP: dropout detected — resetting torus geometry');
       this.gapCount++;
@@ -207,6 +223,24 @@ export class PipelineCore {
       this.featurePoints = [];
       this.adaptiveMin = PPI_MIN;
       this.adaptiveMax = PPI_MAX;
+      // Deviation must be sustained across observed beats, and the baseline's
+      // 5-minute rule must span observed rhythm — neither may be satisfied by
+      // silence. Both are told how long we were blind.
+      this.changeDetector.notifyGap();
+      this.baselineService.skipDeadTime(gapMs ?? 0);
+      // Clear derived readings so a stale pre-gap dance/κ/Gini is never
+      // presented — or logged — as belonging to a post-gap beat.
+      this.state = {
+        ...this.state,
+        displayPoints: [],
+        danceMatch: null,
+        kappaMedian: 0,
+        gini: 0,
+        spread: 0,
+        bpm: null,
+        bpm15: null,
+        isDancing: false,
+      };
     }
 
     if (this.verbose) console.log('PIPELINE_BEAT', this.totalBeats + 1, 'ppi=', ppi);
@@ -239,12 +273,18 @@ export class PipelineCore {
     // Re-map ALL existing display points with current adaptive bounds.
     // This prevents stale normalization from the first few beats causing
     // permanent clustering. All points stay in sync with the latest bounds.
+    // This loop runs BEFORE this beat's point is pushed, so displayPoints is
+    // one shorter than the buffer's newest index. The previous formula omitted
+    // that -1 and shifted every point one beat later: measured on a 100-beat
+    // run, 57 of 60 points held the wrong interval pair and the newest two
+    // collapsed onto identical coordinates. Points whose predecessor PPI has
+    // already left the ring buffer are skipped rather than clamped onto the
+    // degenerate diagonal; they scroll off within a beat or two anyway.
     for (let i = 0; i < this.displayPoints.length; i++) {
       const dp = this.displayPoints[i];
-      const ppiIdx = buf.length - this.displayPoints.length + i;
-      if (ppiIdx >= 0 && ppiIdx < buf.length) {
-        const prevIdx = Math.max(0, ppiIdx - 1);
-        dp.theta1 = toAngle(buf[prevIdx], this.adaptiveMin, this.adaptiveMax);
+      const ppiIdx = buf.length - 1 - this.displayPoints.length + i;
+      if (ppiIdx >= 1 && ppiIdx < buf.length) {
+        dp.theta1 = toAngle(buf[ppiIdx - 1], this.adaptiveMin, this.adaptiveMax);
         dp.theta2 = toAngle(buf[ppiIdx], this.adaptiveMin, this.adaptiveMax);
       }
     }
@@ -317,11 +357,33 @@ export class PipelineCore {
 
     // Dance identification + features every DANCE_UPDATE_INTERVAL beats
     const shouldMatchDance = this.totalBeats % DANCE_UPDATE_INTERVAL === 0;
-    const hasEnoughData = this.kappaBuffer.length >= 10;
+    // Require a settled window, not merely 10 curvatures. `spread` is the std
+    // over the whole feature window, so a 12-point window right after a gap is
+    // systematically narrower than a 60-point one — enough to match
+    // "The Lock-Step" spuriously and, worse, to be fed to addSample() as a
+    // baseline sample or compared against a 60-beat baseline.
+    const hasEnoughData = this.kappaBuffer.length >= MIN_FEATURE_WINDOW;
 
     if (shouldMatchDance && hasEnoughData) {
       const positiveKappas = this.kappaBuffer.filter(k => k > 0);
-      if (positiveKappas.length >= 2) {
+      if (positiveKappas.length < 2) {
+        // Degenerate geometry — an exactly alternating rhythm (bigeminy,
+        // pulsus alternans, 2:1 block) makes every triplet collapse, so no
+        // features exist. Previously this branch fell through silently and
+        // the UI kept displaying the last dance at its last confidence as if
+        // it were current. Report unknown instead.
+        if (this.verbose) {
+          console.log(`[Dance] beat=${this.totalBeats} degenerate geometry — features unavailable`);
+        }
+        update = {
+          ...update,
+          danceMatch: null,
+          kappaMedian: 0,
+          gini: 0,
+          spread: 0,
+          featuresUnavailable: true,
+        };
+      } else {
         const km = median(positiveKappas);
         const g = giniCoefficient(positiveKappas);
         const fPoints = this.featurePoints;
@@ -373,6 +435,7 @@ export class PipelineCore {
           isLearningBaseline: bs.isLearning(),
           baselineBeatCount: bs.getSampleCount(),
           featureHistory: [...this.featureHistory],
+          featuresUnavailable: false,
         };
       }
     }

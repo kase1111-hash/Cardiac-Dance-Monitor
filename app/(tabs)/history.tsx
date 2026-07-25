@@ -70,14 +70,14 @@ export default function HistoryScreen() {
           <Text style={styles.sessionMeta}>
             {formatDate(item.startTime)} • {duration} • {item.beatCount} beats
           </Text>
-          {item.danceTransitions.length > 0 && (
+          {(item.danceTransitions?.length ?? 0) > 0 && (
             <Text style={styles.transitions}>
               {item.danceTransitions.length} transition{item.danceTransitions.length !== 1 ? 's' : ''}
             </Text>
           )}
         </View>
         <View style={styles.stats}>
-          <Text style={styles.statValue}>{item.summaryStats.bpmMean}</Text>
+          <Text style={styles.statValue}>{item.summaryStats?.bpmMean ?? '--'}</Text>
           <Text style={styles.statLabel}>BPM</Text>
         </View>
       </TouchableOpacity>

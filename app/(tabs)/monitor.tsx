@@ -13,7 +13,7 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, ScrollView, useWindowDimensions,
-  TouchableOpacity,
+  TouchableOpacity, AppState, Alert,
 } from 'react-native';
 import Svg, { Polyline } from 'react-native-svg';
 import { exportBeatCSV } from '../../src/session/export-beat-csv';
@@ -43,6 +43,7 @@ import { Onboarding } from '../../src/display/Onboarding';
 import { useOnboarding } from '../../src/hooks/use-onboarding';
 import { BaselineIndicator } from '../../src/display/BaselineIndicator';
 import { SIGNAL_GAP_MS } from '../../shared/constants';
+import { AlertService, type AlertEvent } from '../../src/alerts/alert-service';
 import { sessionStore } from '../../src/session/session-store-instance';
 import { appStorage } from '../../src/session/async-storage-adapter';
 import { beatLogger } from '../../src/session/beat-logger';
@@ -55,12 +56,12 @@ import { beatLogger } from '../../src/session/beat-logger';
 export default function MonitorScreen() {
   const { width } = useWindowDimensions();
   const torusSize = Math.min(width - 32, 300);
-  const { sourceType, simulatedScenario, baselineResetCounter, forceBaselineCounter, ppgValidationMode, replayOnboardingCounter } = useDataSource();
+  const { sourceType, simulatedScenario, baselineResetCounter, forceBaselineCounter, ppgValidationMode, replayOnboardingCounter, filterSensitivity } = useDataSource();
   const { seen: onboardingSeen, markSeen: markOnboardingSeen } = useOnboarding();
   const [replayOnboarding, setReplayOnboarding] = useState(false);
   const simulated = useSimulatedPulseOx(simulatedScenario, false); // no auto-start
-  const camera = useCameraPPG();
-  const ble = useInnovoPulseOx();
+  const camera = useCameraPPG(filterSensitivity);
+  const ble = useInnovoPulseOx(filterSensitivity);
 
   // Select active source based on sourceType
   const pulseOx = sourceType === 'camera' ? camera
@@ -70,8 +71,26 @@ export default function MonitorScreen() {
   const handleCameraFrame = useCallback((redMean: number, timestampMs: number) => {
     camera.processFrame(redMean, timestampMs);
   }, [camera]);
-  const { state, processPPI, reset, resetBaseline, forceEstablishBaseline } = useMonitorPipeline(appStorage);
-  const { recState, startSession, recordBeat, endSession } = useSessionRecorder();
+  const {
+    state, processPPI, reset, resetBaseline, forceEstablishBaseline, getBaselineService,
+  } = useMonitorPipeline(appStorage);
+
+  // The baseline's true recording time. Passing Date.now() here made the
+  // indicator always read "0m ago", even for a baseline restored from storage
+  // that was recorded days earlier.
+  const baselineRecordedAt = !state.isLearningBaseline
+    ? getBaselineService().getBaseline()?.recordedAt ?? null
+    : null;
+  const {
+    recState, startSession, recordBeat, recordChangeEvent, endSession,
+  } = useSessionRecorder();
+
+  // AlertService and its 30-minute suppression were fully implemented and
+  // tested but wired to nothing, so the spec's 3-sigma sustained alert never
+  // reached the user. It is driven here from the pipeline's change level.
+  const alertService = useRef(new AlertService());
+  const [activeAlert, setActiveAlert] = useState<AlertEvent | null>(null);
+  const prevChangeLevel = useRef(state.changeLevel);
 
   const sessionStarted = useRef(false);
   const prevResetCounter = useRef(baselineResetCounter);
@@ -83,11 +102,15 @@ export default function MonitorScreen() {
   useEffect(() => {
     const id = setInterval(() => {
       const last = lastBeatAtRef.current;
-      const live = pulseOx.connectionStatus === 'connected';
-      setSignalStale(live && last !== null && Date.now() - last > SIGNAL_GAP_MS);
+      // Deliberately NOT gated on connectionStatus === 'connected'. Requiring
+      // a live connection turned the staleness treatment OFF at the exact
+      // moment it mattered most — when reconnect gave up and the status went
+      // 'disconnected', the banner vanished and the torus snapped back to full
+      // brightness over a minutes-old reading.
+      setSignalStale(last !== null && Date.now() - last > SIGNAL_GAP_MS);
     }, 1000);
     return () => clearInterval(id);
-  }, [pulseOx.connectionStatus]);
+  }, []);
 
   // Chest mode state
   const [chestMode, setChestMode] = useState(false);
@@ -137,6 +160,21 @@ export default function MonitorScreen() {
     };
   }, []);
 
+  // Changing the simulated rhythm must clear the pipeline too. The simulator
+  // restarts in ~50ms — well under SIGNAL_GAP_MS — so the watchdog does not
+  // see a gap, and ~60 beats of the previous scenario stayed in the torus and
+  // curvature buffers, blending into the new scenario's dance match.
+  const prevScenario = useRef(simulatedScenario);
+  useEffect(() => {
+    if (prevScenario.current === simulatedScenario) return;
+    prevScenario.current = simulatedScenario;
+    if (sourceType !== 'simulated') return;
+    lastBeatAtRef.current = null;
+    setSignalStale(false);
+    reset();
+    beatLogger.clear();
+  }, [simulatedScenario, sourceType, reset]);
+
   // Connect/disconnect all sources when sourceType changes + reset pipeline
   const prevSourceType = useRef(sourceType);
   useEffect(() => {
@@ -169,15 +207,44 @@ export default function MonitorScreen() {
       beatLogger.clear();
       clearAccelBuffer();
       // End current session so old data doesn't mix
-      if (sessionStarted.current) {
-        const session = endSession();
-        if (session && session.beatCount > 0) {
-          sessionStore.saveSession(session);
-        }
-        sessionStarted.current = false;
-      }
+      void flushSession();
     }
   }, [sourceType, ppgValidationMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Drive alerts + session change-event log from the pipeline's change level.
+  useEffect(() => {
+    const level = state.changeLevel;
+    const prev = prevChangeLevel.current;
+    if (level === prev) return;
+    prevChangeLevel.current = level;
+
+    const danceName = state.danceMatch?.name ?? 'Unknown';
+    if (level === 'notice' || level === 'alert') {
+      recordChangeEvent(level, state.changeStatus.mahalanobisDistance, danceName, danceName);
+    }
+
+    const events = alertService.current.processLevelChange(
+      level, state.changeStatus.mahalanobisDistance, danceName,
+    );
+    for (const ev of events) {
+      console.log('ALERT_EVENT:', ev.type, ev.message);
+      setActiveAlert(ev);
+      if (ev.type === 'alert') {
+        // Three pulses, per SPEC 5.1. Haptics is optional at runtime.
+        try {
+          const Haptics = require('expo-haptics');
+          for (let i = 0; i < 3; i++) {
+            setTimeout(
+              () => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning),
+              i * 400,
+            );
+          }
+        } catch {
+          // no haptics available — banner alone
+        }
+      }
+    }
+  }, [state.changeLevel, state.changeStatus.mahalanobisDistance, state.danceMatch, recordChangeEvent]);
 
   // Watch for baseline reset requests from Settings
   useEffect(() => {
@@ -206,19 +273,22 @@ export default function MonitorScreen() {
     }
   }, [forceBaselineCounter, forceEstablishBaseline]);
 
-  // Use latestBeat (includes sequence counter) so every beat triggers the effect,
-  // even if two consecutive PPIs happen to have the same numeric value.
-  const latestBeat = 'latestBeat' in pulseOx ? (pulseOx as any).latestBeat : null;
+  // latestBeat carries a sequence counter, so every beat changes identity and
+  // triggers this effect — even when two consecutive PPIs are numerically
+  // equal. Every source is required to provide it (see PulseOxInterface).
+  const latestBeat = pulseOx.latestBeat;
 
   // Feed PPIs from pulse source into the pipeline
   useEffect(() => {
-    const ppi = latestBeat?.ppi ?? pulseOx.latestPPI;
+    const ppi = latestBeat?.ppi;
     if (ppi !== null && ppi !== undefined) {
       const now = Date.now();
       lastBeatAtRef.current = now;
       setSignalStale(false);
-      console.log('BEAT', state.totalBeats + 1, 'ppi=', ppi, 'source=', sourceType);
-      processPPI(ppi, now);
+
+      // `snap` is this beat's state. Everything logged below must read from it
+      // rather than from `state`, which is still the previous beat's snapshot.
+      const snap = processPPI(ppi, now);
 
       // Auto-start session on first valid PPI
       if (!sessionStarted.current) {
@@ -238,34 +308,34 @@ export default function MonitorScreen() {
         raw_ppg: null as number | null,
         spo2: (sourceType === 'ble_innovo' ? ble.spo2 : null) as number | null,
         device_bpm: (sourceType === 'ble_innovo' ? ble.deviceBPM : null) as number | null,
-        baseline_distance: state.changeStatus.level !== 'learning'
-          ? state.changeStatus.mahalanobisDistance : null,
-        trail_length: state.trailLength,
+        baseline_distance: snap.changeStatus.level !== 'learning'
+          ? snap.changeStatus.mahalanobisDistance : null,
+        trail_length: snap.trailLength,
       };
 
       // Record beat for session (with raw data)
-      recordBeat(state.danceMatch, rawBeat);
+      recordBeat(snap.danceMatch, rawBeat);
 
       // Append to CSV beat logger for research export
-      const dp = state.displayPoints;
+      const dp = snap.displayPoints;
       const lastPt = dp.length > 0 ? dp[dp.length - 1] : null;
       const accelBuf = chestMode ? getAccelBuffer() : [];
       beatLogger.append({
-        timestamp: new Date().toISOString(),
-        beat_number: state.totalBeats + 1,
+        timestamp: new Date(now).toISOString(),
+        beat_number: snap.totalBeats,
         ppi_ms: ppi,
         source: sourceType,
         spo2: sourceType === 'ble_innovo' ? ble.spo2 : null,
-        bpm: state.bpm,
+        bpm: snap.bpm,
         pi_percent: sourceType === 'ble_innovo' ? ble.perfusionIndex : null,
-        dance_name: state.danceMatch?.name ?? null,
-        dance_confidence: state.danceMatch ? Math.round(state.danceMatch.confidence * 100) : null,
-        kappa: state.kappaMedian,
-        gini: state.gini,
-        sigma: state.spread,
+        dance_name: snap.danceMatch?.name ?? null,
+        dance_confidence: snap.danceMatch ? Math.round(snap.danceMatch.confidence * 100) : null,
+        kappa: snap.kappaMedian,
+        gini: snap.gini,
+        sigma: snap.spread,
         theta1: lastPt?.theta1 ?? 0,
         theta2: lastPt?.theta2 ?? 0,
-        trail_length: state.trailLength,
+        trail_length: snap.trailLength,
         motion_artifact: chestMode ? detectMotionArtifact(now, ppi) : false,
         breath_rate: chestMode ? getBreathRate(accelBuf) : null,
         ibi_ms: chestMode ? getLatestIBI(accelBuf) : null,
@@ -273,17 +343,51 @@ export default function MonitorScreen() {
     }
   }, [latestBeat, pulseOx.latestPPI]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /**
+   * Persist the in-progress session, if any. Safe to call repeatedly:
+   * endSession() nulls its own state and returns null on a second call.
+   */
+  const flushSession = useCallback(async () => {
+    if (!sessionStarted.current) return;
+    const session = endSession();
+    sessionStarted.current = false;
+    if (session && session.beatCount > 0) {
+      try {
+        await sessionStore.saveSession(session);
+      } catch (e: any) {
+        console.warn('SESSION_SAVE_FAILED:', e?.message ?? e);
+        Alert.alert(
+          'Could not save session',
+          'Device storage is full. Free space or delete old sessions from History, then record again.',
+        );
+      }
+    }
+  }, [endSession]);
+
+  // Save on unmount and when the app leaves the foreground. Without this a
+  // long recording that never hit a source change or a 5-minute disconnect
+  // was simply lost on force-close, despite "Recording • N beats" on screen.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'background' || next === 'inactive') void flushSession();
+    });
+    return () => {
+      sub.remove();
+      void flushSession();
+    };
+  }, [flushSession]);
+
   // Auto-end session when disconnected
   const disconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (pulseOx.connectionStatus === 'disconnected' && sessionStarted.current) {
       // Auto-end after 5 minutes of disconnection
       disconnectTimer.current = setTimeout(async () => {
-        const session = endSession();
-        if (session && session.beatCount > 0) {
-          await sessionStore.saveSession(session);
-        }
-        sessionStarted.current = false;
+        await flushSession();
+        // Clear the beat log too: reset() restarts beat_number at 1, so a
+        // later export otherwise interleaved two beat-number sequences in one
+        // file with no delimiter between them.
+        beatLogger.clear();
         reset();
       }, 5 * 60 * 1000);
     } else if (disconnectTimer.current) {
@@ -368,13 +472,30 @@ export default function MonitorScreen() {
           </View>
         </View>
 
+        {/* Change alert banner — dismissible, never diagnostic */}
+        {activeAlert && (
+          <TouchableOpacity
+            style={[
+              styles.alertBanner,
+              activeAlert.type === 'recovery' && styles.alertBannerRecovery,
+            ]}
+            onPress={() => setActiveAlert(null)}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.alertBannerText}>{activeAlert.message}</Text>
+            <Text style={styles.alertBannerDismiss}>Tap to dismiss</Text>
+          </TouchableOpacity>
+        )}
+
         {/* Signal continuity banner — stale data must never look live */}
         {(signalStale || pulseOx.connectionStatus === 'reconnecting') && (
           <View style={styles.signalBanner}>
             <Text style={styles.signalBannerText}>
               {pulseOx.connectionStatus === 'reconnecting'
                 ? 'Sensor connection lost — reconnecting...'
-                : 'Signal lost — check sensor contact'}
+                : pulseOx.connectionStatus === 'disconnected'
+                  ? 'Sensor disconnected — reading below is not live'
+                  : 'Signal lost — check sensor contact'}
             </Text>
           </View>
         )}
@@ -496,7 +617,7 @@ export default function MonitorScreen() {
           isLearning={state.isLearningBaseline}
           progress={state.baselineLearningProgress}
           sampleCount={state.baselineBeatCount}
-          baselineRecordedAt={!state.isLearningBaseline ? Date.now() : null}
+          baselineRecordedAt={baselineRecordedAt}
           baselineBeatCount={!state.isLearningBaseline ? state.baselineBeatCount : null}
         />
 
@@ -575,6 +696,28 @@ const styles = StyleSheet.create({
     color: '#f87171',
     fontSize: 12,
     fontWeight: '600',
+  },
+  alertBanner: {
+    backgroundColor: '#3b1d1d',
+    borderLeftWidth: 3,
+    borderLeftColor: '#f59e0b',
+    borderRadius: 6,
+    padding: 10,
+    marginBottom: 12,
+  },
+  alertBannerRecovery: {
+    backgroundColor: '#14281f',
+    borderLeftColor: '#34d399',
+  },
+  alertBannerText: {
+    color: '#e2e8f0',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  alertBannerDismiss: {
+    color: '#64748b',
+    fontSize: 11,
+    marginTop: 4,
   },
   chestToggle: {
     paddingHorizontal: 10,

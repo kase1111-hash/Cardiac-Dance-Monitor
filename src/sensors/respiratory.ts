@@ -15,8 +15,10 @@ import type { AccelSample } from './chest-accel';
 // Moving average window: 4 seconds at 25 Hz = 100 samples
 const MA_WINDOW = 100;
 
-// Minimum spacing between breaths: 2 seconds at 25 Hz = 50 samples
-const MIN_PEAK_SPACING_SAMPLES = 50;
+// Minimum spacing between breaths: 2 seconds.
+// NOTE: this caps detectable rate at 30 breaths/min, so tachypnea above that
+// is reported as a lower rate rather than flagged. Widening it requires
+// re-tuning the peak detector against real chest-accelerometer recordings.
 const MIN_PEAK_SPACING_MS = 2000;
 
 // Maximum expected breath period: 10 seconds (6 breaths/min)
@@ -29,9 +31,36 @@ export interface BreathPeak {
 }
 
 /**
- * Apply bandpass filter to Z-axis data via moving average subtraction.
- * breath_signal = z - movingAvg(z, 4sec)
- * This removes DC offset and slow drift while keeping breath frequencies.
+ * Smoothing window for the upper band edge: ~0.6s at 25Hz.
+ * Suppresses the cardiac ballistocardiogram (~1.2Hz) and sensor noise, which
+ * a subtraction-only filter passes at essentially unity gain.
+ */
+const SMOOTH_WINDOW = 15;
+
+/** Centred moving average of `values` over `window` samples. */
+function movingAverage(values: number[], window: number): number[] {
+  const len = values.length;
+  const out: number[] = new Array(len);
+  const half = Math.floor(window / 2);
+  for (let i = 0; i < len; i++) {
+    const start = Math.max(0, i - half);
+    const end = Math.min(len, i + half + 1);
+    let sum = 0;
+    for (let j = start; j < end; j++) sum += values[j];
+    out[i] = sum / (end - start);
+  }
+  return out;
+}
+
+/**
+ * Bandpass the Z axis to the respiratory band (~0.1-0.6 Hz).
+ *
+ * `z - movingAvg(z, 4s)` alone is a HIGH-pass, not a bandpass: it has unity
+ * gain all the way to Nyquist, so the cardiac ballistocardiogram (~1.2Hz) and
+ * sensor noise passed straight through. Measured against a true 15 br/min
+ * signal, that read 24.1 br/min with cardiac content at 25% of breath
+ * amplitude and 28.3 br/min with modest sensor noise. Applying a short
+ * smoothing pass afterwards supplies the missing upper edge.
  *
  * @param samples - raw accelerometer samples
  * @returns filtered Z-axis values aligned with input samples
@@ -41,22 +70,11 @@ export function bandpassZ(samples: readonly AccelSample[]): number[] {
   if (len === 0) return [];
 
   const zValues = samples.map(s => s.z);
-  const filtered: number[] = new Array(len);
-
-  for (let i = 0; i < len; i++) {
-    // Compute moving average centered on i
-    const halfWin = Math.floor(MA_WINDOW / 2);
-    const start = Math.max(0, i - halfWin);
-    const end = Math.min(len, i + halfWin + 1);
-    let sum = 0;
-    for (let j = start; j < end; j++) {
-      sum += zValues[j];
-    }
-    const avg = sum / (end - start);
-    filtered[i] = zValues[i] - avg;
-  }
-
-  return filtered;
+  // High-pass: remove DC offset and slow postural drift.
+  const trend = movingAverage(zValues, MA_WINDOW);
+  const highPassed = zValues.map((z, i) => z - trend[i]);
+  // Low-pass: drop cardiac and noise content above the respiratory band.
+  return movingAverage(highPassed, SMOOTH_WINDOW);
 }
 
 /**
@@ -84,8 +102,10 @@ export function detectBreathPeaks(
         if (timeSinceLast < MIN_PEAK_SPACING_MS) continue;
       }
 
-      // Require minimum amplitude (reject noise near zero)
-      if (Math.abs(filtered[i]) < 0.001) continue;
+      // Require minimum amplitude above baseline. Using Math.abs() here let a
+      // local maximum sitting at, say, -0.5 (deep inside an exhalation trough)
+      // pass the amplitude test and be counted as an inhalation peak.
+      if (filtered[i] < 0.001) continue;
 
       peaks.push({
         timestamp: samples[i].timestamp,

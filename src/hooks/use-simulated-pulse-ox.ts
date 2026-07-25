@@ -13,20 +13,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { RhythmSimulator, type RhythmScenario } from '../../shared/simulator';
 import { PPI_MIN, PPI_MAX } from '../../shared/constants';
-import type { PulseOxInterface, ConnectionStatus, SignalQuality } from '../ble/ble-service';
+import type {
+  PulseOxInterface, ConnectionStatus, SignalQuality, PPIBeat,
+} from '../ble/ble-service';
 
-/** A PPI beat with a unique sequence number so React always sees a change. */
-export interface PPIBeat {
-  ppi: number;
-  seq: number;
-}
+export type { PPIBeat };
 
 export function useSimulatedPulseOx(
   scenario: RhythmScenario = 'nsr',
   autoStart: boolean = true,
 ): PulseOxInterface & {
   setScenario: (s: RhythmScenario) => void;
-  latestBeat: PPIBeat | null;
 } {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [latestPPI, setLatestPPI] = useState<number | null>(null);

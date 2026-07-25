@@ -27,12 +27,14 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { Platform, PermissionsAndroid, Alert } from 'react-native';
 import { BLEPPGHandler, INNOVO_PPG_SAMPLE_RATE } from './ble-ppg-handler';
 import { QualityGate } from '../../shared/quality-gate';
+import { PPI_DEVIATION_MAX } from '../../shared/constants';
 import { ReconnectPolicy } from './reconnect-policy';
 import type {
   PulseOxInterface,
   ConnectionStatus,
   SignalQuality,
   StatusPacket,
+  PPIBeat,
 } from './ble-service';
 import {
   NORDIC_UART_SERVICE_UUID,
@@ -146,18 +148,38 @@ async function requestBLEPermissions(): Promise<boolean> {
   return true;
 }
 
-export function useInnovoPulseOx(): InnovoPulseOxResult {
+/** useRef that constructs its value once, instead of on every render. */
+function useLazyRef<T>(factory: () => T): { current: T } {
+  const ref = useRef<T | null>(null);
+  if (ref.current === null) ref.current = factory();
+  return ref as { current: T };
+}
+
+/**
+ * @param deviationTolerance - Fractional deviation from the running median
+ *   beyond which a beat counts against the signal-quality badge. Does not
+ *   affect which beats reach the pipeline. Defaults to PPI_DEVIATION_MAX.
+ */
+export function useInnovoPulseOx(
+  deviationTolerance: number = PPI_DEVIATION_MAX,
+): InnovoPulseOxResult {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [latestPPI, setLatestPPI] = useState<number | null>(null);
+  const [latestBeat, setLatestBeat] = useState<PPIBeat | null>(null);
   const [signalQuality, setSignalQuality] = useState<SignalQuality>('disconnected');
   const [spo2, setSpo2] = useState<number | null>(null);
   const [deviceBPM, setDeviceBPM] = useState<number | null>(null);
   const [perfusionIndex, setPerfusionIndex] = useState<number | null>(null);
   const [scanning, setScanning] = useState(false);
 
-  const handler = useRef(new BLEPPGHandler(INNOVO_PPG_SAMPLE_RATE));
-  const qualityGate = useRef(new QualityGate());
-  const reconnectPolicy = useRef(new ReconnectPolicy());
+  // Lazy-init: plain useRef(new X()) constructs a throwaway object on every
+  // render (BLEPPGHandler builds a PPGProcessor + Butterworth coefficients).
+  const handler = useLazyRef(() => new BLEPPGHandler(INNOVO_PPG_SAMPLE_RATE));
+  const qualityGate = useLazyRef(() => new QualityGate(deviationTolerance));
+  const reconnectPolicy = useLazyRef(() => new ReconnectPolicy());
+
+  const seqRef = useRef(0);
+  const stateSubRef = useRef<any>(null);
   const subscriptionRef = useRef<any>(null);
   const fff0SubRef = useRef<any>(null);
   const disconnectSubRef = useRef<any>(null);
@@ -174,7 +196,12 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     handler.current.onPPI = (ppi: number) => {
       const valid = qualityGate.current.check(ppi);
       if (valid) {
+        seqRef.current++;
         setLatestPPI(ppi);
+        // Sequence number guarantees a new identity even when two consecutive
+        // PPIs are numerically equal — otherwise React bails out and the beat
+        // is silently lost.
+        setLatestBeat({ ppi, seq: seqRef.current });
       }
       setSignalQuality(qualityGate.current.getQualityLevel());
     };
@@ -186,11 +213,16 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     };
 
     handler.current.onStatus = (status: StatusPacket) => {
-      if (status.spo2 >= 0) setSpo2(status.spo2);
+      // > 0, not >= 0: a device still acquiring emits 0, and "SpO2 0%" is an
+      // alarming, meaningless reading. Show nothing until it's real.
+      if (status.spo2 > 0) setSpo2(status.spo2);
       if (status.bpm > 0) setDeviceBPM(status.bpm);
       if (status.perfusionIndex > 0) setPerfusionIndex(status.perfusionIndex);
     };
   }, []);
+
+  /** Cancels a pending "waiting for Bluetooth to power on" promise, if any. */
+  const bluetoothWaitResolveRef = useRef<(() => void) | null>(null);
 
   const clearTimers = useCallback(() => {
     if (scanTimeoutRef.current) {
@@ -209,6 +241,14 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
 
   /** Remove all subscriptions and drop the device connection. */
   const teardownConnection = useCallback(() => {
+    if (bluetoothWaitResolveRef.current) {
+      bluetoothWaitResolveRef.current();
+      bluetoothWaitResolveRef.current = null;
+    }
+    if (stateSubRef.current) {
+      stateSubRef.current.remove();
+      stateSubRef.current = null;
+    }
     if (disconnectSubRef.current) {
       disconnectSubRef.current.remove();
       disconnectSubRef.current = null;
@@ -258,6 +298,15 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     await new Promise(resolve => setTimeout(resolve, 500));
     console.log('BLE_SETTLE: done');
 
+    // Abandon setup if the user disconnected or switched source during the
+    // awaits above — otherwise we create subscriptions and an interval that
+    // nothing will ever tear down.
+    if (!activeRef.current) {
+      console.log('BLE_SETUP: aborted — no longer active');
+      connected.cancelConnection().catch(() => {});
+      return;
+    }
+
     let firstNotification = true;
     lastNotificationAtRef.current = Date.now();
 
@@ -277,6 +326,11 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
         if (firstNotification) {
           console.log('BLE_SUBSCRIBE: active — first notification received');
           firstNotification = false;
+          // Reset backoff only once DATA actually flows. Resetting merely on
+          // connect let a connected-but-silent link (CCCD enable dropped,
+          // firmware in BP mode) cycle connect → stall → reconnect forever,
+          // because attempts never accumulated toward the give-up cap.
+          reconnectPolicy.current.reset();
         }
 
         lastNotificationAtRef.current = Date.now();
@@ -329,7 +383,6 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
       }
     }, STALL_CHECK_INTERVAL_MS);
 
-    reconnectPolicy.current.reset();
     setConnectionStatus('connected');
     setSignalQuality('poor'); // upgrades as data flows
   }, []);
@@ -358,6 +411,9 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     }
     deviceRef.current = null;
     handler.current.reset();
+    // Fresh gate too: a stale running median from before the dropout would
+    // mis-flag the first beats after reconnect if the rate changed meanwhile.
+    qualityGate.current = new QualityGate(deviationTolerance);
     wireHandler();
 
     const delay = reconnectPolicy.current.nextDelayMs();
@@ -412,13 +468,20 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     }
 
     // Request runtime permissions (Android)
-    const permitted = await requestBLEPermissions();
-    if (!permitted) return;
-
+    // Claim the slot BEFORE any await. Setting this after the permission
+    // await left a window where two rapid source switches both passed the
+    // guard, started two scans, and orphaned the first scan timeout — which
+    // later fired and marked a live streaming connection "disconnected".
     activeRef.current = true;
 
+    const permitted = await requestBLEPermissions();
+    if (!permitted) {
+      activeRef.current = false;
+      return;
+    }
+
     handler.current.reset();
-    qualityGate.current = new QualityGate();
+    qualityGate.current = new QualityGate(deviationTolerance);
     reconnectPolicy.current.reset();
     wireHandler();
 
@@ -433,15 +496,28 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     console.log('BLE_STATE: adapter=' + state);
     if (state !== 'PoweredOn') {
       console.log('BLE_STATE: waiting for PoweredOn...');
-      await new Promise<void>((resolve) => {
-        const sub = manager.onStateChange((newState: string) => {
+      // Track the subscription so disconnect()/unmount can cancel the wait.
+      // Previously it was unreachable, so with Bluetooth off the hook pinned
+      // at scanning with activeRef stuck true and leaked one native listener
+      // per attempt — all of which fired at once when BT was finally enabled.
+      const poweredOn = await new Promise<boolean>((resolve) => {
+        stateSubRef.current = manager.onStateChange((newState: string) => {
           console.log('BLE_STATE: changed to ' + newState);
           if (newState === 'PoweredOn') {
-            sub.remove();
-            resolve();
+            stateSubRef.current?.remove();
+            stateSubRef.current = null;
+            resolve(true);
           }
         }, true);
+        bluetoothWaitResolveRef.current = () => resolve(false);
       });
+      if (!poweredOn || !activeRef.current) {
+        console.log('BLE_STATE: wait cancelled');
+        activeRef.current = false;
+        setConnectionStatus('disconnected');
+        setScanning(false);
+        return;
+      }
     }
 
     console.log('BLE_SCAN: starting for service ' + NORDIC_UART_SERVICE_UUID);
@@ -490,6 +566,11 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
           await setupConnectedDevice(manager, connected);
         } catch (err: any) {
           console.log('BLE_ERROR: connect failed: ' + (err?.message || err));
+          // Setup can throw after it has already opened the device and created
+          // the FFF1 subscription (e.g. FFF0 missing on some firmware). Without
+          // this teardown the link stayed open and streaming while the UI said
+          // "disconnected", and the next connect() opened a second one.
+          teardownConnection();
           setConnectionStatus('disconnected');
           activeRef.current = false;
         }
@@ -507,7 +588,7 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
       setConnectionStatus('disconnected');
       activeRef.current = false;
     }, SCAN_TIMEOUT_MS);
-  }, [wireHandler, setupConnectedDevice]);
+  }, [wireHandler, setupConnectedDevice, teardownConnection]);
 
   const disconnect = useCallback(() => {
     activeRef.current = false;
@@ -524,6 +605,7 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     reconnectPolicy.current.reset();
     setConnectionStatus('disconnected');
     setLatestPPI(null);
+    setLatestBeat(null);
     setSignalQuality('disconnected');
     setSpo2(null);
     setDeviceBPM(null);
@@ -545,6 +627,7 @@ export function useInnovoPulseOx(): InnovoPulseOxResult {
     disconnect,
     connectionStatus,
     latestPPI,
+    latestBeat,
     signalQuality,
     sourceName: 'Innovo iP900BPB',
     spo2,

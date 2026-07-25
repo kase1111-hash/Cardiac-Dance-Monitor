@@ -15,10 +15,14 @@ interface Props {
 export function MetricsRow({ bpm, kappa, gini, sigma }: Props) {
   return (
     <View style={styles.row}>
+      {/* Greek labels must be JSX expressions, not attribute string literals:
+          JSX does NOT process escape sequences inside attribute values, so
+          the previous attribute form rendered the raw escape text on screen.
+          Inside braces these are ordinary JS string literals and resolve. */}
       <MetricCell label="BPM" value={bpm > 0 ? String(bpm) : '--'} />
-      <MetricCell label="\u03BA" value={kappa > 0 ? kappa.toFixed(1) : '--'} />
+      <MetricCell label={'\u03BA'} value={kappa > 0 ? kappa.toFixed(1) : '--'} />
       <MetricCell label="Gini" value={gini > 0 ? gini.toFixed(3) : '--'} />
-      <MetricCell label="\u03C3" value={sigma !== null ? sigma.toFixed(1) : '\u2014'} />
+      <MetricCell label={'\u03C3'} value={sigma !== null ? sigma.toFixed(1) : '\u2014'} />
     </View>
   );
 }

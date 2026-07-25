@@ -165,20 +165,20 @@ export default function SettingsScreen() {
           </Text>
         </TouchableOpacity>
 
-        {/* Signal filter sensitivity slider */}
-        <Text style={styles.sectionHeader}>Signal Filter Sensitivity</Text>
+        {/* Signal quality tolerance slider */}
+        <Text style={styles.sectionHeader}>Signal Quality Tolerance</Text>
         <View style={styles.sliderContainer}>
           <View style={styles.sliderHeader}>
             <Text style={styles.sliderLabel}>
-              {Math.round(filterSensitivity * 100)}%
+              ±{Math.round(filterSensitivity * 100)}%
             </Text>
             <Text style={styles.sliderHint}>
-              {filterSensitivity === 0 ? 'Accept all' : filterSensitivity < 0.3 ? 'Permissive' : filterSensitivity < 0.6 ? 'Moderate' : 'Strict'}
+              {filterSensitivity <= 0.25 ? 'Strict' : filterSensitivity < 0.6 ? 'Moderate' : 'Permissive'}
             </Text>
           </View>
           <Slider
             style={{ width: '100%', height: 40 }}
-            minimumValue={0}
+            minimumValue={0.1}
             maximumValue={1}
             step={0.05}
             value={filterSensitivity}
@@ -188,9 +188,13 @@ export default function SettingsScreen() {
             thumbTintColor="#22c55e"
           />
           <Text style={styles.sliderDesc}>
-            Controls how aggressively noisy beats are rejected.
-            0% = accept everything (best for simulation).
-            40% = recommended for real hardware.
+            How far a beat may sit from your running median before it counts
+            against the signal-quality indicator. Lower = quicker to report a
+            poor signal. 40% is the calibrated default.
+            {'\n\n'}
+            This affects the quality indicator only. It never decides which
+            beats are analysed — irregular beats are real data, not noise, and
+            are always included.
           </Text>
         </View>
 

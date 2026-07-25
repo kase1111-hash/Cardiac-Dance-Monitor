@@ -37,6 +37,44 @@ export interface EquivalenceResult {
   cameraDances: string[];
 }
 
+/**
+ * Greedily match each BLE beat to the nearest camera beat in time.
+ *
+ * Both sources timestamp the beat they just measured, so the same heartbeat
+ * appears within a few tens of ms on each stream. Matching is monotonic (the
+ * camera cursor never moves backwards), so an unmatched beat on either side
+ * is skipped rather than shifting everything after it.
+ */
+export const PAIR_TOLERANCE_MS = 250;
+
+export function pairByTimestamp(
+  ble: readonly { ppi: number; timestamp: number }[],
+  camera: readonly { ppi: number; timestamp: number }[],
+): { ble: number[]; camera: number[] } {
+  const outBle: number[] = [];
+  const outCam: number[] = [];
+  let c = 0;
+
+  for (const b of ble) {
+    // Advance while the next camera beat is closer to this BLE beat.
+    while (
+      c + 1 < camera.length
+      && Math.abs(camera[c + 1].timestamp - b.timestamp)
+         <= Math.abs(camera[c].timestamp - b.timestamp)
+    ) {
+      c++;
+    }
+    if (c >= camera.length) break;
+    if (Math.abs(camera[c].timestamp - b.timestamp) <= PAIR_TOLERANCE_MS) {
+      outBle.push(b.ppi);
+      outCam.push(camera[c].ppi);
+      c++; // each camera beat pairs at most once
+    }
+  }
+
+  return { ble: outBle, camera: outCam };
+}
+
 interface TimestampedPPI {
   ppi: number;
   timestamp: number;
@@ -67,16 +105,28 @@ export class EquivalenceAnalyzer {
            this.cameraPPIs.length >= MIN_PPIS_FOR_ANALYSIS;
   }
 
+  /** Expose the timestamp-aligned pairing (used by tests and diagnostics). */
+  getAlignedPairs(): { ble: number[]; camera: number[] } {
+    return pairByTimestamp(this.blePPIs, this.cameraPPIs);
+  }
+
   /**
    * Run equivalence analysis. Returns null if insufficient data.
    */
   analyze(): EquivalenceResult | null {
     if (!this.canAnalyze()) return null;
 
-    // Use the shorter stream length for pairing
-    const n = Math.min(this.blePPIs.length, this.cameraPPIs.length);
-    const blePpis = this.blePPIs.slice(0, n).map(p => p.ppi);
-    const camPpis = this.cameraPPIs.slice(0, n).map(p => p.ppi);
+    // Pair by TIMESTAMP, not array index. Both streams carry timestamps but
+    // index pairing assumed they start together and never diverge — yet the
+    // camera typically starts a beat or two later and misses beats, which is
+    // guaranteed, not hypothetical. A single missed beat shifted every
+    // subsequent pair by one and made the correlation, the mean difference
+    // and the viability verdict meaningless.
+    const { ble: blePpis, camera: camPpis } = pairByTimestamp(
+      this.blePPIs, this.cameraPPIs,
+    );
+    const n = blePpis.length;
+    if (n < MIN_PPIS_FOR_ANALYSIS) return null;
 
     // Pearson correlation
     const correlation = pearsonCorrelation(blePpis, camPpis);

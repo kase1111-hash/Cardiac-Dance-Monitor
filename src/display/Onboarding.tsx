@@ -39,9 +39,16 @@ function TorusFrame({ children }: { children?: React.ReactNode }) {
   );
 }
 
-/** Map a 0-1 fraction to a pixel inside the frame (y inverted, SVG-style). */
+/**
+ * Map a 0-1 fraction to a pixel inside the frame.
+ *
+ * Both axes run top-left origin, matching TorusDisplay's angleToPixel. The
+ * y axis previously inverted to math orientation, so the identity diagonal
+ * ran bottom-left→top-right in this tutorial but top-left→bottom-right on
+ * the live screen — the intro taught a mirror image of the real display.
+ */
 const fx = (f: number) => PAD + f * INNER;
-const fy = (f: number) => PAD + (1 - f) * INNER;
+const fy = (f: number) => PAD + f * INNER;
 
 function dots(coords: Array<[number, number]>, color: string, r = 4) {
   return coords.map(([x, y], i) => (
