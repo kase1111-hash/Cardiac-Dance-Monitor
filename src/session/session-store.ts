@@ -26,6 +26,23 @@ export class MemoryStorage implements StorageAdapter {
   }
 }
 
+/**
+ * Minimum shape the History and Session Detail screens rely on.
+ * Deliberately structural, not exhaustive — it guards the fields those
+ * screens dereference without optional chaining.
+ */
+function isUsableSession(value: unknown): value is Session {
+  if (typeof value !== 'object' || value === null) return false;
+  const s = value as Partial<Session>;
+  return (
+    typeof s.id === 'string'
+    && typeof s.startTime === 'number'
+    && typeof s.beatCount === 'number'
+    && typeof s.summaryStats === 'object' && s.summaryStats !== null
+    && Array.isArray(s.danceTransitions)
+  );
+}
+
 export class SessionStore {
   private storage: StorageAdapter;
 
@@ -33,14 +50,35 @@ export class SessionStore {
     this.storage = storage;
   }
 
+  /**
+   * Read all sessions, discarding anything structurally unusable.
+   *
+   * Valid JSON of the wrong shape used to reach the UI directly: a non-array
+   * made FlatList throw and unshift/filter crash, and a record written by an
+   * older schema crashed the History list on `item.summaryStats.bpmMean`.
+   * One bad record made the whole screen unrecoverable, so validate here —
+   * the single choke point every read passes through.
+   */
   async getSessions(): Promise<Session[]> {
     const raw = await this.storage.getItem(SESSIONS_KEY);
     if (!raw) return [];
+    let parsed: unknown;
     try {
-      return JSON.parse(raw) as Session[];
+      parsed = JSON.parse(raw);
     } catch {
       return [];
     }
+    if (!Array.isArray(parsed)) {
+      console.warn('SESSION_STORE: stored value is not an array — ignoring');
+      return [];
+    }
+    const valid = parsed.filter(isUsableSession);
+    if (valid.length !== parsed.length) {
+      console.warn(
+        `SESSION_STORE: dropped ${parsed.length - valid.length} malformed session(s)`,
+      );
+    }
+    return valid;
   }
 
   async saveSession(session: Session): Promise<void> {

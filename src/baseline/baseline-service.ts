@@ -85,6 +85,20 @@ export class BaselineService {
   }
 
   /**
+   * Exclude a dropout interval from the baseline duration requirement.
+   *
+   * The 5-minute rule is meant to span 5 minutes of OBSERVED rhythm. Because
+   * elapsed time is measured against a fixed start, a long dropout would
+   * satisfy it outright — one beat, a 10-minute gap, then 200 quick beats
+   * froze a "personal baseline" built from ~16 seconds of data, which then
+   * became the denominator for every subsequent Mahalanobis distance.
+   */
+  skipDeadTime(gapMs: number): void {
+    if (this.frozen || this.learningStartTime === null || gapMs <= 0) return;
+    this.learningStartTime += gapMs;
+  }
+
+  /**
    * Feed a feature sample into the baseline learner.
    * Called every DANCE_UPDATE_INTERVAL beats with the current features.
    * Returns true if baseline was just established on this call.
@@ -154,7 +168,11 @@ export class BaselineService {
    * Requires at least BASELINE_MIN_BEATS samples.
    */
   forceEstablish(): boolean {
-    if (this.rawBeats < BASELINE_MIN_BEATS && this.totalSamples < 2) return false;
+    // BOTH conditions are required. With `&&`, 200 raw beats alone sufficed
+    // even with zero feature samples, so establish() averaged empty arrays and
+    // froze an all-zero baseline — every later distance then divided by the
+    // SD floor against a zero mean and pinned the UI to a permanent alert.
+    if (this.rawBeats < BASELINE_MIN_BEATS || this.totalSamples < 2) return false;
     this.establish();
     return true;
   }

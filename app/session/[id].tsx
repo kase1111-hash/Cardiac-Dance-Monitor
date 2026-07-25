@@ -42,10 +42,12 @@ export default function SessionDetailScreen() {
 
   useEffect(() => {
     if (typeof id === 'string') {
-      sessionStore.getSession(id).then(s => {
-        setSession(s);
-        setLoaded(true);
-      });
+      sessionStore.getSession(id)
+        .then(s => setSession(s))
+        // Without this catch a rejected read left `loaded` false forever and
+        // the screen sat on "Loading..." with no way out but killing the app.
+        .catch(e => console.warn('SESSION_LOAD_FAILED:', e?.message ?? e))
+        .finally(() => setLoaded(true));
     } else {
       setLoaded(true);
     }

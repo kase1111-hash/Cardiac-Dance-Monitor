@@ -86,6 +86,19 @@ export class ChangeDetector {
     return { mahalanobisDistance: distance, level: 'notice', sustainedSince: this.sustainedSince };
   }
 
+  /**
+   * Clear sustained-deviation tracking after a signal dropout.
+   *
+   * `sustainedSince` is wall-clock, so silence counts as "sustained." Without
+   * this, one deviant window before a 10-minute dropout plus one deviant
+   * window after it satisfies CHANGE_ALERT_SUSTAIN and fires an alert from
+   * two observations and zero continuously-observed deviation. Deviation must
+   * be sustained across beats we actually saw.
+   */
+  notifyGap(): void {
+    this.sustainedSince = null;
+  }
+
   /** Get the current change level. */
   getLevel(): ChangeLevel {
     return this.currentLevel;

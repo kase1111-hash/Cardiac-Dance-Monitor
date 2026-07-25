@@ -619,14 +619,18 @@ describe('Session Store works without native modules', () => {
     const { SessionStore, MemoryStorage } = require('../session/session-store');
     const store = new SessionStore(new MemoryStorage());
 
+    // Must match the real Session shape — SessionStore now validates on read
+    // and drops malformed records, because one bad entry used to crash the
+    // History screen on item.summaryStats.bpmMean.
     const session = {
       id: 'mem-test-1',
-      startedAt: Date.now() - 60000,
-      endedAt: Date.now(),
+      startTime: Date.now() - 60000,
+      endTime: Date.now(),
+      dominantDance: 'The Waltz',
       beatCount: 50,
-      averageBPM: 72,
-      dances: [],
-      transitions: [],
+      changeEvents: [],
+      danceTransitions: [],
+      summaryStats: { bpmMean: 72, kappaMedian: 7.7, giniMean: 0.34 },
       rawBeats: [],
     };
 
@@ -634,6 +638,34 @@ describe('Session Store works without native modules', () => {
     const sessions = await store.getSessions();
     expect(sessions.length).toBe(1);
     expect(sessions[0].id).toBe('mem-test-1');
+  });
+
+  test('malformed stored records are dropped instead of crashing History', async () => {
+    const { SessionStore, MemoryStorage } = require('../session/session-store');
+    const storage = new MemoryStorage();
+    const store = new SessionStore(storage);
+
+    await storage.setItem('cardiac_dance_sessions', JSON.stringify([
+      { id: 'legacy', startedAt: 1, dances: [] },       // old schema
+      null,
+      'not an object',
+      {
+        id: 'good', startTime: 1, endTime: 2, dominantDance: 'The Waltz',
+        beatCount: 10, changeEvents: [], danceTransitions: [],
+        summaryStats: { bpmMean: 70, kappaMedian: 1, giniMean: 0.3 },
+      },
+    ]));
+
+    const sessions = await store.getSessions();
+    expect(sessions.map((s: { id: string }) => s.id)).toEqual(['good']);
+  });
+
+  test('a non-array stored value does not crash the store', async () => {
+    const { SessionStore, MemoryStorage } = require('../session/session-store');
+    const storage = new MemoryStorage();
+    const store = new SessionStore(storage);
+    await storage.setItem('cardiac_dance_sessions', JSON.stringify({ nope: true }));
+    await expect(store.getSessions()).resolves.toEqual([]);
   });
 
   test('SessionStore handles empty state', async () => {

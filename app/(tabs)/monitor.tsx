@@ -13,7 +13,7 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, ScrollView, useWindowDimensions,
-  TouchableOpacity,
+  TouchableOpacity, AppState, Alert,
 } from 'react-native';
 import Svg, { Polyline } from 'react-native-svg';
 import { exportBeatCSV } from '../../src/session/export-beat-csv';
@@ -70,7 +70,16 @@ export default function MonitorScreen() {
   const handleCameraFrame = useCallback((redMean: number, timestampMs: number) => {
     camera.processFrame(redMean, timestampMs);
   }, [camera]);
-  const { state, processPPI, reset, resetBaseline, forceEstablishBaseline } = useMonitorPipeline(appStorage);
+  const {
+    state, processPPI, reset, resetBaseline, forceEstablishBaseline, getBaselineService,
+  } = useMonitorPipeline(appStorage);
+
+  // The baseline's true recording time. Passing Date.now() here made the
+  // indicator always read "0m ago", even for a baseline restored from storage
+  // that was recorded days earlier.
+  const baselineRecordedAt = !state.isLearningBaseline
+    ? getBaselineService().getBaseline()?.recordedAt ?? null
+    : null;
   const { recState, startSession, recordBeat, endSession } = useSessionRecorder();
 
   const sessionStarted = useRef(false);
@@ -83,11 +92,15 @@ export default function MonitorScreen() {
   useEffect(() => {
     const id = setInterval(() => {
       const last = lastBeatAtRef.current;
-      const live = pulseOx.connectionStatus === 'connected';
-      setSignalStale(live && last !== null && Date.now() - last > SIGNAL_GAP_MS);
+      // Deliberately NOT gated on connectionStatus === 'connected'. Requiring
+      // a live connection turned the staleness treatment OFF at the exact
+      // moment it mattered most — when reconnect gave up and the status went
+      // 'disconnected', the banner vanished and the torus snapped back to full
+      // brightness over a minutes-old reading.
+      setSignalStale(last !== null && Date.now() - last > SIGNAL_GAP_MS);
     }, 1000);
     return () => clearInterval(id);
-  }, [pulseOx.connectionStatus]);
+  }, []);
 
   // Chest mode state
   const [chestMode, setChestMode] = useState(false);
@@ -169,13 +182,7 @@ export default function MonitorScreen() {
       beatLogger.clear();
       clearAccelBuffer();
       // End current session so old data doesn't mix
-      if (sessionStarted.current) {
-        const session = endSession();
-        if (session && session.beatCount > 0) {
-          sessionStore.saveSession(session);
-        }
-        sessionStarted.current = false;
-      }
+      void flushSession();
     }
   }, [sourceType, ppgValidationMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -276,17 +283,51 @@ export default function MonitorScreen() {
     }
   }, [latestBeat, pulseOx.latestPPI]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /**
+   * Persist the in-progress session, if any. Safe to call repeatedly:
+   * endSession() nulls its own state and returns null on a second call.
+   */
+  const flushSession = useCallback(async () => {
+    if (!sessionStarted.current) return;
+    const session = endSession();
+    sessionStarted.current = false;
+    if (session && session.beatCount > 0) {
+      try {
+        await sessionStore.saveSession(session);
+      } catch (e: any) {
+        console.warn('SESSION_SAVE_FAILED:', e?.message ?? e);
+        Alert.alert(
+          'Could not save session',
+          'Device storage is full. Free space or delete old sessions from History, then record again.',
+        );
+      }
+    }
+  }, [endSession]);
+
+  // Save on unmount and when the app leaves the foreground. Without this a
+  // long recording that never hit a source change or a 5-minute disconnect
+  // was simply lost on force-close, despite "Recording • N beats" on screen.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'background' || next === 'inactive') void flushSession();
+    });
+    return () => {
+      sub.remove();
+      void flushSession();
+    };
+  }, [flushSession]);
+
   // Auto-end session when disconnected
   const disconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (pulseOx.connectionStatus === 'disconnected' && sessionStarted.current) {
       // Auto-end after 5 minutes of disconnection
       disconnectTimer.current = setTimeout(async () => {
-        const session = endSession();
-        if (session && session.beatCount > 0) {
-          await sessionStore.saveSession(session);
-        }
-        sessionStarted.current = false;
+        await flushSession();
+        // Clear the beat log too: reset() restarts beat_number at 1, so a
+        // later export otherwise interleaved two beat-number sequences in one
+        // file with no delimiter between them.
+        beatLogger.clear();
         reset();
       }, 5 * 60 * 1000);
     } else if (disconnectTimer.current) {
@@ -377,7 +418,9 @@ export default function MonitorScreen() {
             <Text style={styles.signalBannerText}>
               {pulseOx.connectionStatus === 'reconnecting'
                 ? 'Sensor connection lost — reconnecting...'
-                : 'Signal lost — check sensor contact'}
+                : pulseOx.connectionStatus === 'disconnected'
+                  ? 'Sensor disconnected — reading below is not live'
+                  : 'Signal lost — check sensor contact'}
             </Text>
           </View>
         )}
@@ -499,7 +542,7 @@ export default function MonitorScreen() {
           isLearning={state.isLearningBaseline}
           progress={state.baselineLearningProgress}
           sampleCount={state.baselineBeatCount}
-          baselineRecordedAt={!state.isLearningBaseline ? Date.now() : null}
+          baselineRecordedAt={baselineRecordedAt}
           baselineBeatCount={!state.isLearningBaseline ? state.baselineBeatCount : null}
         />
 
