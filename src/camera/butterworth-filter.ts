@@ -18,6 +18,8 @@ class BiquadSection {
   // State variables
   private z1 = 0;
   private z2 = 0;
+  /** False until the delay line has been primed from the first sample. */
+  private primed = false;
 
   constructor(b0: number, b1: number, b2: number, a1: number, a2: number) {
     this.b0 = b0;
@@ -28,6 +30,25 @@ class BiquadSection {
   }
 
   process(input: number): number {
+    // Prime the delay line from the first sample so the filter starts in
+    // steady state for a constant input. Starting at zero while redMean is
+    // ~200 presents a full-amplitude step: the response took ~52 samples
+    // (1.73s) to settle and its 3rd sample was a local maximum, so the peak
+    // detector fired on it and emitted a bogus first interval after every
+    // reset (which happens on each finger transition and dropout recovery).
+    if (!this.primed) {
+      this.primed = true;
+      // DC steady state for constant x: y = x*(b0+b1+b2)/(1+a1+a2). Solving
+      // the DF2T fixed point z1 = b1*x - a1*y + z2, z2 = b2*x - a2*y makes
+      // the very first output equal y instead of b0*x. For the high-pass
+      // stage the DC gain is 0, so the output correctly starts at 0.
+      const denom = 1 + this.a1 + this.a2;
+      if (Math.abs(denom) > 1e-12) {
+        const y = (input * (this.b0 + this.b1 + this.b2)) / denom;
+        this.z2 = this.b2 * input - this.a2 * y;
+        this.z1 = this.b1 * input - this.a1 * y + this.z2;
+      }
+    }
     const output = this.b0 * input + this.z1;
     this.z1 = this.b1 * input - this.a1 * output + this.z2;
     this.z2 = this.b2 * input - this.a2 * output;
@@ -37,6 +58,7 @@ class BiquadSection {
   reset(): void {
     this.z1 = 0;
     this.z2 = 0;
+    this.primed = false;
   }
 }
 

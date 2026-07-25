@@ -31,19 +31,39 @@ export interface BeatLogRow {
 
 const CSV_HEADER = 'timestamp,beat_number,ppi_ms,source,spo2,bpm,pi_percent,dance_name,dance_confidence,kappa,gini,sigma,theta1,theta2,trail_length,motion_artifact,breath_rate,ibi_ms';
 
+/**
+ * Rows retained in memory (~2.5 hours at 70 BPM).
+ * Unbounded growth meant an overnight recording accumulated hundreds of
+ * thousands of row objects, and toCSV() then built one giant string via
+ * Array.join — doubling peak memory at exactly the moment the user tapped
+ * Export. Oldest rows are dropped once the cap is reached.
+ */
+export const BEAT_LOG_CAP = 10_000;
+
 class BeatLogger {
   private rows: BeatLogRow[] = [];
+  private dropped = 0;
 
   get count(): number {
     return this.rows.length;
   }
 
+  /** Rows discarded because the cap was reached (0 if none). */
+  get droppedCount(): number {
+    return this.dropped;
+  }
+
   append(row: BeatLogRow): void {
     this.rows.push(row);
+    if (this.rows.length > BEAT_LOG_CAP) {
+      this.rows.shift();
+      this.dropped++;
+    }
   }
 
   clear(): void {
     this.rows = [];
+    this.dropped = 0;
   }
 
   toCSV(): string {

@@ -6,7 +6,7 @@
  */
 import { ButterworthBandpass } from './butterworth-filter';
 import { PeakDetector } from './peak-detector';
-import { PPI_MIN } from '../../shared/constants';
+import { PPI_MIN, PPI_MAX } from '../../shared/constants';
 
 const PPG_LOW_CUTOFF = 0.5;  // Hz (30 BPM lower bound)
 const PPG_HIGH_CUTOFF = 4.0; // Hz (240 BPM upper bound)
@@ -43,7 +43,12 @@ export class PPGProcessor {
 
       if (this.lastPeakTimestamp !== null) {
         const ppi = peakTimestamp - this.lastPeakTimestamp;
-        if (this.onPPI) {
+        // Emit only physiologically plausible intervals. The filter's
+        // initialization transient produces a spurious early peak (the first
+        // emitted PPI measured ~1733ms in testing), and a missed beat doubles
+        // the interval. Passing those downstream let them count against the
+        // quality gate's clean-beat rate as if they were real measurements.
+        if (this.onPPI && ppi >= PPI_MIN && ppi <= PPI_MAX) {
           this.onPPI(ppi);
         }
       }

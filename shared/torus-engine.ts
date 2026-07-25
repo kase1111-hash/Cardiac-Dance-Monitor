@@ -38,6 +38,19 @@ export function geodesicDistance(a: [number, number], b: [number, number]): numb
  * Area computed via Heron's formula.
  * Returns 0 for degenerate triangles (collinear or coincident points).
  *
+ * KNOWN LIMITATION — exactly periodic rhythms:
+ * For a strictly alternating sequence (a,b,a,b…) the torus points are
+ * (a,b),(b,a),(a,b)… so p1 and p3 COINCIDE, b = 0, and this returns 0 for
+ * every triplet. Bigeminy, pulsus alternans and 2:1 block are exactly that
+ * shape — and exactly what "The Stumble" should catch. The true limit as
+ * p1→p3 is 2/a (a hairpin turn), not 0, so this is a discontinuity rather
+ * than a genuine zero. It is left as-is deliberately: the dance centroids in
+ * constants.ts were empirically calibrated through this exact function, so
+ * changing the degenerate return value would invalidate them and require
+ * recalibration. Callers must instead detect "no positive curvatures" and
+ * report features as unavailable rather than showing a stale reading — see
+ * PipelineCore.processBeat.
+ *
  * Source: Cardiac Torus Paper I, Section 4.1
  */
 export function mengerCurvature(

@@ -137,3 +137,28 @@ describe('PipelineCore gap handling', () => {
     expect(prev.theta2).not.toBeCloseTo(newest.theta2, 9);
   });
 });
+
+describe('Degenerate geometry (period-2 rhythms)', () => {
+  test('bigeminy reports features unavailable instead of a stale dance', () => {
+    // Strict alternation makes p1 and p3 coincide for every triplet, so all
+    // curvatures are 0. Previously the feature block fell through silently
+    // and the UI kept showing the last dance as if it were current.
+    const { core } = newCore();
+    let t = 1_000_000;
+
+    // Establish a normal rhythm and a real dance first.
+    for (let i = 0; i < 80; i++) { t += 800; core.processBeat(800 + (i % 5) * 12, t); }
+    expect(core.getState().danceMatch).not.toBeNull();
+
+    // Now switch to strict bigeminy (900/450 alternating).
+    for (let i = 0; i < 80; i++) {
+      const ppi = i % 2 === 0 ? 900 : 450;
+      t += ppi;
+      core.processBeat(ppi, t);
+    }
+
+    const state = core.getState();
+    expect(state.featuresUnavailable).toBe(true);
+    expect(state.danceMatch).toBeNull();
+  });
+});

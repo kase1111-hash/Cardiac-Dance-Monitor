@@ -29,9 +29,36 @@ export interface BreathPeak {
 }
 
 /**
- * Apply bandpass filter to Z-axis data via moving average subtraction.
- * breath_signal = z - movingAvg(z, 4sec)
- * This removes DC offset and slow drift while keeping breath frequencies.
+ * Smoothing window for the upper band edge: ~0.6s at 25Hz.
+ * Suppresses the cardiac ballistocardiogram (~1.2Hz) and sensor noise, which
+ * a subtraction-only filter passes at essentially unity gain.
+ */
+const SMOOTH_WINDOW = 15;
+
+/** Centred moving average of `values` over `window` samples. */
+function movingAverage(values: number[], window: number): number[] {
+  const len = values.length;
+  const out: number[] = new Array(len);
+  const half = Math.floor(window / 2);
+  for (let i = 0; i < len; i++) {
+    const start = Math.max(0, i - half);
+    const end = Math.min(len, i + half + 1);
+    let sum = 0;
+    for (let j = start; j < end; j++) sum += values[j];
+    out[i] = sum / (end - start);
+  }
+  return out;
+}
+
+/**
+ * Bandpass the Z axis to the respiratory band (~0.1-0.6 Hz).
+ *
+ * `z - movingAvg(z, 4s)` alone is a HIGH-pass, not a bandpass: it has unity
+ * gain all the way to Nyquist, so the cardiac ballistocardiogram (~1.2Hz) and
+ * sensor noise passed straight through. Measured against a true 15 br/min
+ * signal, that read 24.1 br/min with cardiac content at 25% of breath
+ * amplitude and 28.3 br/min with modest sensor noise. Applying a short
+ * smoothing pass afterwards supplies the missing upper edge.
  *
  * @param samples - raw accelerometer samples
  * @returns filtered Z-axis values aligned with input samples
@@ -41,22 +68,11 @@ export function bandpassZ(samples: readonly AccelSample[]): number[] {
   if (len === 0) return [];
 
   const zValues = samples.map(s => s.z);
-  const filtered: number[] = new Array(len);
-
-  for (let i = 0; i < len; i++) {
-    // Compute moving average centered on i
-    const halfWin = Math.floor(MA_WINDOW / 2);
-    const start = Math.max(0, i - halfWin);
-    const end = Math.min(len, i + halfWin + 1);
-    let sum = 0;
-    for (let j = start; j < end; j++) {
-      sum += zValues[j];
-    }
-    const avg = sum / (end - start);
-    filtered[i] = zValues[i] - avg;
-  }
-
-  return filtered;
+  // High-pass: remove DC offset and slow postural drift.
+  const trend = movingAverage(zValues, MA_WINDOW);
+  const highPassed = zValues.map((z, i) => z - trend[i]);
+  // Low-pass: drop cardiac and noise content above the respiratory band.
+  return movingAverage(highPassed, SMOOTH_WINDOW);
 }
 
 /**

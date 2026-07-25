@@ -43,6 +43,7 @@ import { Onboarding } from '../../src/display/Onboarding';
 import { useOnboarding } from '../../src/hooks/use-onboarding';
 import { BaselineIndicator } from '../../src/display/BaselineIndicator';
 import { SIGNAL_GAP_MS } from '../../shared/constants';
+import { AlertService, type AlertEvent } from '../../src/alerts/alert-service';
 import { sessionStore } from '../../src/session/session-store-instance';
 import { appStorage } from '../../src/session/async-storage-adapter';
 import { beatLogger } from '../../src/session/beat-logger';
@@ -80,7 +81,16 @@ export default function MonitorScreen() {
   const baselineRecordedAt = !state.isLearningBaseline
     ? getBaselineService().getBaseline()?.recordedAt ?? null
     : null;
-  const { recState, startSession, recordBeat, endSession } = useSessionRecorder();
+  const {
+    recState, startSession, recordBeat, recordChangeEvent, endSession,
+  } = useSessionRecorder();
+
+  // AlertService and its 30-minute suppression were fully implemented and
+  // tested but wired to nothing, so the spec's 3-sigma sustained alert never
+  // reached the user. It is driven here from the pipeline's change level.
+  const alertService = useRef(new AlertService());
+  const [activeAlert, setActiveAlert] = useState<AlertEvent | null>(null);
+  const prevChangeLevel = useRef(state.changeLevel);
 
   const sessionStarted = useRef(false);
   const prevResetCounter = useRef(baselineResetCounter);
@@ -185,6 +195,41 @@ export default function MonitorScreen() {
       void flushSession();
     }
   }, [sourceType, ppgValidationMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Drive alerts + session change-event log from the pipeline's change level.
+  useEffect(() => {
+    const level = state.changeLevel;
+    const prev = prevChangeLevel.current;
+    if (level === prev) return;
+    prevChangeLevel.current = level;
+
+    const danceName = state.danceMatch?.name ?? 'Unknown';
+    if (level === 'notice' || level === 'alert') {
+      recordChangeEvent(level, state.changeStatus.mahalanobisDistance, danceName, danceName);
+    }
+
+    const events = alertService.current.processLevelChange(
+      level, state.changeStatus.mahalanobisDistance, danceName,
+    );
+    for (const ev of events) {
+      console.log('ALERT_EVENT:', ev.type, ev.message);
+      setActiveAlert(ev);
+      if (ev.type === 'alert') {
+        // Three pulses, per SPEC 5.1. Haptics is optional at runtime.
+        try {
+          const Haptics = require('expo-haptics');
+          for (let i = 0; i < 3; i++) {
+            setTimeout(
+              () => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning),
+              i * 400,
+            );
+          }
+        } catch {
+          // no haptics available — banner alone
+        }
+      }
+    }
+  }, [state.changeLevel, state.changeStatus.mahalanobisDistance, state.danceMatch, recordChangeEvent]);
 
   // Watch for baseline reset requests from Settings
   useEffect(() => {
@@ -412,6 +457,21 @@ export default function MonitorScreen() {
           </View>
         </View>
 
+        {/* Change alert banner — dismissible, never diagnostic */}
+        {activeAlert && (
+          <TouchableOpacity
+            style={[
+              styles.alertBanner,
+              activeAlert.type === 'recovery' && styles.alertBannerRecovery,
+            ]}
+            onPress={() => setActiveAlert(null)}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.alertBannerText}>{activeAlert.message}</Text>
+            <Text style={styles.alertBannerDismiss}>Tap to dismiss</Text>
+          </TouchableOpacity>
+        )}
+
         {/* Signal continuity banner — stale data must never look live */}
         {(signalStale || pulseOx.connectionStatus === 'reconnecting') && (
           <View style={styles.signalBanner}>
@@ -621,6 +681,28 @@ const styles = StyleSheet.create({
     color: '#f87171',
     fontSize: 12,
     fontWeight: '600',
+  },
+  alertBanner: {
+    backgroundColor: '#3b1d1d',
+    borderLeftWidth: 3,
+    borderLeftColor: '#f59e0b',
+    borderRadius: 6,
+    padding: 10,
+    marginBottom: 12,
+  },
+  alertBannerRecovery: {
+    backgroundColor: '#14281f',
+    borderLeftColor: '#34d399',
+  },
+  alertBannerText: {
+    color: '#e2e8f0',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  alertBannerDismiss: {
+    color: '#64748b',
+    fontSize: 11,
+    marginTop: 4,
   },
   chestToggle: {
     paddingHorizontal: 10,

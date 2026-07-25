@@ -87,6 +87,12 @@ export interface PipelineState {
   featureHistory: FeatureSample[];
   /** Dropout gaps detected (torus geometry restarted after each) */
   gapCount: number;
+  /**
+   * True when a feature window was due but curvature was degenerate, so no
+   * dance could be computed. Distinct from "still warming up": the UI must
+   * show an unknown state rather than the previous window's reading.
+   */
+  featuresUnavailable: boolean;
 }
 
 const DEFAULT_TRAIL_LENGTH = 20;
@@ -188,6 +194,7 @@ export class PipelineCore {
       trailLength: DEFAULT_TRAIL_LENGTH,
       featureHistory: [],
       gapCount: this.gapCount,
+      featuresUnavailable: false,
     };
   }
 
@@ -359,7 +366,24 @@ export class PipelineCore {
 
     if (shouldMatchDance && hasEnoughData) {
       const positiveKappas = this.kappaBuffer.filter(k => k > 0);
-      if (positiveKappas.length >= 2) {
+      if (positiveKappas.length < 2) {
+        // Degenerate geometry — an exactly alternating rhythm (bigeminy,
+        // pulsus alternans, 2:1 block) makes every triplet collapse, so no
+        // features exist. Previously this branch fell through silently and
+        // the UI kept displaying the last dance at its last confidence as if
+        // it were current. Report unknown instead.
+        if (this.verbose) {
+          console.log(`[Dance] beat=${this.totalBeats} degenerate geometry — features unavailable`);
+        }
+        update = {
+          ...update,
+          danceMatch: null,
+          kappaMedian: 0,
+          gini: 0,
+          spread: 0,
+          featuresUnavailable: true,
+        };
+      } else {
         const km = median(positiveKappas);
         const g = giniCoefficient(positiveKappas);
         const fPoints = this.featurePoints;
@@ -411,6 +435,7 @@ export class PipelineCore {
           isLearningBaseline: bs.isLearning(),
           baselineBeatCount: bs.getSampleCount(),
           featureHistory: [...this.featureHistory],
+          featuresUnavailable: false,
         };
       }
     }
