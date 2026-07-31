@@ -46,7 +46,7 @@ Dance identification uses **fixed normalization** (PPI_MIN=300, PPI_MAX=1500) be
 
 1. Data source hook (`use-simulated-pulse-ox`, `use-innovo-pulse-ox`, or `use-camera-ppg`) produces PPIs
 2. `useMonitorPipeline` hook is a thin React wrapper around `PipelineCore` (`src/pipeline/pipeline-core.ts`), which owns ring buffers, computes torus points with both normalizations, runs dance matching every 10 beats. The core is React-free and time-injected (every beat carries a timestamp) so `src/replay/session-replay.ts` can replay recorded/exported beat CSVs through the identical code path offline
-3. `BaselineService` learns personal baseline from first 200+ beats over 5+ minutes
+3. `BaselineService` learns personal baseline from 200+ beats over 5+ minutes of *observed* rhythm. Progress is persisted while learning and reloaded on the next launch, so the thresholds accumulate across sessions; dropouts and the time between sessions are not credited
 4. `ChangeDetector` computes Mahalanobis distance from baseline every 10 beats
 5. Monitor screen (`app/(tabs)/monitor.tsx`) composes all display components
 

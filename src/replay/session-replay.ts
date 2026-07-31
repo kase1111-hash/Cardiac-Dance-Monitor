@@ -233,6 +233,10 @@ async function runRecording(
     }
   }
 
+  // Mirror what the app does when a session ends: flush partial baseline
+  // progress so the next session resumes from it.
+  if (baselineService.isLearning()) await baselineService.saveProgress();
+
   // Collapse consecutive same-dance windows into timeline segments
   const danceTimeline: DanceSegment[] = [];
   const danceDistribution: Record<string, number> = {};

@@ -255,25 +255,56 @@ describe('Continuity — a baseline across many sessions', () => {
     expect(followUp.windows.every(w => w.changeLevel !== 'learning')).toBe(true);
   });
 
-  test('sessions shorter than the rule never accumulate a baseline', async () => {
-    // GAP, DOCUMENTED: baseline progress (raw beats and learning start time)
-    // lives only in the BaselineService instance, so it is discarded when the
-    // app closes. Ten 2-minute sessions total 1,500 beats and 20 minutes of
-    // rhythm — well past 200 beats and 5 minutes in aggregate — and still
-    // establish nothing. A user who only ever monitors briefly therefore
-    // never gets change detection at all, and nothing in the UI says so.
+  test('sessions too short to establish alone accumulate across launches', async () => {
+    // Ten 2-minute sessions on ten different days. No single one satisfies
+    // 200 beats AND 5 minutes, but together they pass both comfortably.
+    // Learning progress used to live only in the BaselineService instance and
+    // was discarded on every app close, so this established nothing, ever —
+    // a user who only monitored briefly never got change detection at all.
     const run = await replaySessions(
       Array.from({ length: 10 }, (_, i) => recording('nsr', 150, T0 + i * DAY, i + 1)),
     );
 
-    expect(run.baselineEstablishedInSession).toBe(-1);
-    expect(run.finalBaseline).toBeNull();
-    for (const session of run.sessions) {
+    // 150 beats at ~75 BPM is ~2 minutes, so the 5-minute rule falls on the
+    // third session.
+    expect(run.baselineEstablishedInSession).toBe(2);
+    expect(run.finalBaseline).not.toBeNull();
+    expect(run.finalBaseline!.beatCount).toBeGreaterThanOrEqual(BASELINE_MIN_BEATS);
+
+    // Sessions before that honestly report learning...
+    for (const session of run.sessions.slice(0, 2)) {
       expect(session.baselineEstablished).toBe(false);
-      // Without a baseline every window is honestly reported as learning.
       expect(session.windows.every(w => w.changeLevel === 'learning')).toBe(true);
     }
+    // ...and every session after it is graded against the same frozen baseline.
+    for (const session of run.sessions.slice(3)) {
+      expect(session.baselineEstablished).toBe(true);
+      expect(session.baseline).toEqual(run.finalBaseline);
+      expect(session.windows.every(w => w.changeLevel !== 'learning')).toBe(true);
+    }
+    expect(run.baselineRevisions).toBe(1);
   });
+
+  test('a baseline built from many short sessions still flags a real change', async () => {
+    // The accumulated baseline has to be usable, not merely present: build one
+    // out of five short sessions, then present a genuinely different rhythm.
+    const shortDays = Array.from({ length: 5 }, (_, i) =>
+      recording('nsr', 150, T0 + i * DAY, i + 1),
+    );
+    const run = await replaySessions([
+      ...shortDays,
+      recording('nsr', 400, T0 + 5 * DAY, 6),  // unchanged
+      recording('af', 400, T0 + 6 * DAY, 7),   // changed
+    ]);
+
+    const unchanged = run.sessions[5];
+    const changed = run.sessions[6];
+
+    expect(unchanged.windows.filter(w => w.changeLevel === 'alert')).toEqual([]);
+    expect(changed.windows.filter(w => w.changeLevel === 'alert').length).toBeGreaterThan(0);
+    expect(changed.maxMahalanobisDistance)
+      .toBeGreaterThan(unchanged.maxMahalanobisDistance * 5);
+  }, 120_000);
 
   test('a changed rhythm on a later day is flagged, and the day after recovers', async () => {
     const run = await replaySessions([
@@ -382,52 +413,73 @@ describe('Continuity — a baseline across many sessions', () => {
 
 describe('Change detection over hours of an unchanged rhythm', () => {
   /**
-   * CHARACTERIZATION, NOT AN ENDORSEMENT.
+   * The reason CHANGE_NOTICE_SIGMA / CHANGE_ALERT_SIGMA are 6 and 12 rather
+   * than the SPEC's 2 and 3. This distance has three degrees of freedom, so
+   * 2σ and 3σ flagged a quarter of all windows and alerted on a few percent
+   * of them with nothing wrong: hours of an unchanged rhythm spent 30-40% of
+   * windows at "notice" and ~1% at "alert" (~5% for AF).
    *
-   * `session-replay.test.ts` shows a 300-beat follow-up session of the same
-   * rhythm never escalating to alert. Run the same rhythm for hours and it
-   * does: the baseline's SDs come from ~35 heavily overlapping 60-beat
-   * windows inside one 5-minute stretch, so they describe minute-scale
-   * jitter, not hour-scale wander. Measured on these seeded recordings,
-   * roughly a third of windows sit at "notice" and ~1% reach "alert" while
-   * the rhythm never changed.
-   *
-   * These bounds are a regression guard on today's numbers — they exist so
-   * the rate cannot silently get worse, not to bless it. The separability
-   * tests above are what justify the feature: a real change lands 10-50x
-   * further out than any of this noise.
+   * An alert on this screen means "something about your rhythm changed —
+   * consider showing this to a clinician". It has to be rare enough to mean
+   * something. These bounds are what the recalibrated thresholds must keep
+   * delivering; the separability tests above are the other half of the deal.
    */
-  test.each(['nsr', 'chf', 'pvc'] as RhythmScenario[])(
-    'hours of unchanged %s stay within the measured false-positive bounds',
+  test.each(['nsr', 'chf', 'af'] as RhythmScenario[])(
+    'hours of unchanged %s raise no alert at all',
     async (scenario) => {
-      for (const seed of [42, 7]) {
+      for (const seed of [42, 2024, 5]) {
         const result = await replaySession(recording(scenario, 20_000, T0, seed));
         const graded = gradedWindows(result);
         const alert = graded.filter(w => w.changeLevel === 'alert').length;
         const flagged = graded.filter(w => w.changeLevel !== 'normal').length;
 
-        expect(alert / graded.length).toBeLessThan(0.02);
-        expect(flagged / graded.length).toBeLessThan(0.5);
+        expect(alert).toBe(0);
+        // Notices are advisory, but must stay occasional rather than routine.
+        expect(flagged / graded.length).toBeLessThan(0.05);
       }
     },
-    180_000,
+    300_000,
   );
 
-  test('a persistently irregular rhythm is the worst case, and is bounded too', async () => {
-    // AF is excluded from the sweep above because it fails those bounds: a
-    // rhythm that is chaotic by definition cannot be summarized by 5 minutes
-    // of it, so ~5% of windows alert against its OWN baseline — five times
-    // the rate of any organized rhythm. Someone in permanent AF would be
-    // alerted several times an hour about a rhythm that never changed.
-    // Recorded here so the number is visible rather than omitted.
-    for (const seed of [42, 7]) {
-      const result = await replaySession(recording('af', 20_000, T0, seed));
-      const graded = gradedWindows(result);
-      const alert = graded.filter(w => w.changeLevel === 'alert').length;
-      expect(alert / graded.length).toBeGreaterThan(0.02); // documents the gap
-      expect(alert / graded.length).toBeLessThan(0.08);    // guards regression
-    }
+  test('an unchanged rhythm across sessions raises no alert either', async () => {
+    // The cross-session case: yesterday's baseline judging today's identical
+    // rhythm, where an independent recording adds its own offset.
+    const run = await replaySessions([
+      recording('nsr', 500, T0, 1),
+      recording('nsr', 20_000, T0 + DAY, 2),
+    ]);
+    const graded = gradedWindows(run.sessions[1]);
+    expect(graded.filter(w => w.changeLevel === 'alert')).toEqual([]);
+    expect(run.sessions[1].maxMahalanobisDistance).toBeLessThan(CHANGE_ALERT_SIGMA);
   }, 180_000);
+
+  test('bursty ectopy alerts according to what the learning window caught', async () => {
+    // LIMITATION, MEASURED. Ventricular ectopy is bursty: κ swings by an
+    // order of magnitude between windows, so the baseline's κ SD depends
+    // entirely on whether the first five minutes happened to contain bursts.
+    // Across these four seeds it ranges from 12% of the mean to 126% — a 10x
+    // spread in the denominator of every later distance. Deciles across each
+    // 4.5-hour run are flat, so this is not drift or a change in the rhythm;
+    // it is the baseline being tight or loose from the start.
+    //
+    // A burst genuinely IS a deviation from a quiet baseline, so alerting is
+    // defensible. What is not defensible is pretending the behavior is
+    // uniform, so the relationship is asserted directly: a baseline that
+    // captured the burstiness stays quiet, one that missed it does not.
+    for (const seed of [42, 7, 2024, 5]) {
+      const result = await replaySession(recording('pvc', 20_000, T0, seed));
+      const baseline = result.baseline!;
+      const relativeSd = baseline.kappaSd / baseline.kappaMean;
+      const alerts = gradedWindows(result).filter(w => w.changeLevel === 'alert').length;
+
+      expect(alerts === 0).toBe(relativeSd > 0.5);
+      if (alerts > 0) {
+        // And when it does fire it is not marginal — these are κ excursions
+        // far outside anything the baseline saw, not threshold jitter.
+        expect(result.maxMahalanobisDistance).toBeGreaterThan(CHANGE_ALERT_SIGMA * 3);
+      }
+    }
+  }, 300_000);
 
   test('an unchanged rhythm never reaches the distances a changed one does', async () => {
     const learn = recording('nsr', 500, T0, 1);

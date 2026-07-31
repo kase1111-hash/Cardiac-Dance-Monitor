@@ -103,8 +103,8 @@ export const CONFIDENCE_LOW = 0.50;       // below this: dim the label
 // Baseline / Change detection
 export const BASELINE_DURATION = 300;     // seconds (5 minutes) for initial baseline
 export const BASELINE_MIN_BEATS = 200;    // minimum beats before baseline is valid
-export const CHANGE_NOTICE_SIGMA = 2;     // Mahalanobis distance for notice
-export const CHANGE_ALERT_SIGMA = 3;      // Mahalanobis distance for alert
+export const CHANGE_NOTICE_SIGMA = 6;     // Mahalanobis distance for notice
+export const CHANGE_ALERT_SIGMA = 12;     // Mahalanobis distance for alert
 export const CHANGE_ALERT_SUSTAIN = 60;   // seconds sustained before alert fires
 
 // Display

@@ -223,23 +223,37 @@ function mahalanobisDistance(
 IF baseline not established:
     level = 'learning'
 
-ELSE IF distance < CHANGE_NOTICE_SIGMA (2):
+ELSE IF distance < CHANGE_NOTICE_SIGMA (6):
     level = 'normal'
 
-ELSE IF distance < CHANGE_ALERT_SIGMA (3):
+ELSE IF distance < CHANGE_ALERT_SIGMA (12):
     level = 'notice'
-    sustainedSince = first timestamp where distance crossed 2σ
+    sustainedSince = first timestamp where distance crossed CHANGE_NOTICE_SIGMA
 
-ELSE IF distance >= CHANGE_ALERT_SIGMA (3):
+ELSE IF distance >= CHANGE_ALERT_SIGMA (12):
     IF sustained for >= CHANGE_ALERT_SUSTAIN (60 seconds):
         level = 'alert'
     ELSE:
         level = 'notice'  // waiting for persistence
 ```
 
+**Threshold note (revised after long-run replay).** The original 2σ / 3σ
+values treated this as a one-dimensional z-score, but the distance has three
+degrees of freedom, so they flagged roughly a quarter of all windows and
+alerted on a few percent of them with nothing wrong. Recalibrated to 6σ /
+12σ against the measured same-rhythm distribution — see the comment on
+CHANGE_NOTICE_SIGMA in `shared/constants.ts` for the data.
+
 ### 3.4 Baseline Management
 
-- **User reset:** Settings → "Reset my baseline" → requires confirmation → clears stored baseline → re-enters learning mode
+- **Accumulation:** learning progress (beat count, observed rhythm, feature
+  samples) is persisted while learning and reloaded on the next launch, so
+  the 200-beat and 5-minute rules span sessions. Without this, a user whose
+  sessions were always shorter than 5 minutes never established a baseline.
+- **Observed time:** the 5-minute rule counts rhythm actually observed,
+  summed beat to beat. Dropouts and the time between sessions are not
+  credited.
+- **User reset:** Settings → "Reset my baseline" → requires confirmation → clears stored baseline and any partial progress → re-enters learning mode
 - **When to reset:** After cardioversion, new medication, major health event
 - **Display:** Show baseline age: "Baseline recorded 3 days ago (4,200 beats)"
 
