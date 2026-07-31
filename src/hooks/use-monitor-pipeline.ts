@@ -87,5 +87,18 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
 
   const getBaselineService = useCallback(() => baselineService.current!, []);
 
-  return { state, processPPI, reset, resetBaseline, forceEstablishBaseline, getBaselineService };
+  /**
+   * Flush partial baseline-learning progress. The service checkpoints itself
+   * every few feature windows; call this when the app is about to lose the
+   * foreground so the last partial window is not the one that gets dropped.
+   */
+  const flushBaselineProgress = useCallback(
+    () => baselineService.current!.saveProgress(),
+    [],
+  );
+
+  return {
+    state, processPPI, reset, resetBaseline, forceEstablishBaseline,
+    getBaselineService, flushBaselineProgress,
+  };
 }

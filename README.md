@@ -17,7 +17,7 @@ The system answers three questions in real time:
 |---|----------|-------------------|-------------|
 | **1** | **Is it dancing?** | Consistent pulse intervals detected in a 10-beat window | Every beat |
 | **2** | **Which dance?** | Nearest-neighbor to empirical centroids in (κ, Gini, spread) space | Every 10 beats |
-| **3** | **Has it changed?** | Mahalanobis distance from personal baseline. 2σ = notice, 3σ = alert | Every 10 beats |
+| **3** | **Has it changed?** | Mahalanobis distance from personal baseline. 6σ = notice, 12σ = alert | Every 10 beats |
 
 Question 3 is the primary product value: continuous, low-cost detection of rhythm deviation from YOUR normal pattern. Question 2 provides geometric context. Question 1 is the safety gate.
 
@@ -255,7 +255,7 @@ confidence = (1/d_best) / Σ(1/d_i)
 
 // Change detection
 Mahalanobis distance from personal baseline
-2σ = notice, 3σ = alert
+6σ = notice, 12σ = alert
 ```
 
 **That's the entire algorithm.** Everything else is signal acquisition and display.

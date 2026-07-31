@@ -2,7 +2,7 @@
  * Alert service — manages change detection notifications with suppression.
  *
  * Per SPEC Section 5.1:
- * - Alert fires when change level = 'alert' (3σ sustained 60s)
+ * - Alert fires when change level = 'alert' (CHANGE_ALERT_SIGMA sustained 60s)
  * - Vibrate 3x + non-blocking banner
  * - Suppression: 1 alert per 30-minute window
  * - Recovery toast when level drops from alert to normal

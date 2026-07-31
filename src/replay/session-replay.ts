@@ -87,6 +87,36 @@ export interface ReplayOptions {
   applyQualityGate?: boolean;
 }
 
+/** One session's result plus how the shared baseline stood when it ended. */
+export interface MultiSessionResult {
+  /** Per-recording results, in order. */
+  sessions: ReplayResult[];
+  /**
+   * Index of the recording during which the baseline was established,
+   * or -1 if no recording ever established one.
+   */
+  baselineEstablishedInSession: number;
+  /** The baseline as persisted after the last recording. */
+  finalBaseline: PersonalBaseline | null;
+  /**
+   * Distinct values the persisted baseline took across the whole run. A
+   * frozen baseline must produce exactly one — anything more means a later
+   * session rewrote the reference every subsequent distance is measured
+   * against.
+   */
+  baselineRevisions: number;
+}
+
+export interface MultiSessionOptions extends ReplayOptions {
+  /**
+   * Carry one PipelineCore across recordings, resetting it between them (a
+   * source switch inside one app run). Default false: each recording gets a
+   * cold core, as a fresh app launch does. Either way the baseline persists
+   * through storage, because that is what BaselineService.save()/load() do.
+   */
+  reusePipeline?: boolean;
+}
+
 /**
  * Parse a beat CSV exported by the app (beat-logger format) into replay
  * beats. Only `timestamp` and `ppi_ms` columns are required; malformed
@@ -130,9 +160,24 @@ export async function replaySession(
     await baselineService.load();
   }
 
-  const gate = new QualityGate();
-  const applyGate = options.applyQualityGate ?? true;
   const core = new PipelineCore(baselineService);
+  return runRecording(beats, core, baselineService, options.applyQualityGate ?? true);
+}
+
+/**
+ * Run one recording through an existing core and baseline service.
+ *
+ * Split out of replaySession so a multi-session run can hand the SAME
+ * baseline service to every recording — the one piece of state the app
+ * deliberately carries across sessions.
+ */
+async function runRecording(
+  beats: ReplayBeat[],
+  core: PipelineCore,
+  baselineService: BaselineService,
+  applyGate: boolean,
+): Promise<ReplayResult> {
+  const gate = new QualityGate();
 
   const windows: ReplayWindow[] = [];
   const changeEvents: ChangeEvent[] = [];
@@ -150,6 +195,10 @@ export async function replaySession(
     accepted++;
 
     const state = core.processBeat(beat.ppi, beat.timestampMs);
+
+    // Persist exactly where the live hook does, so a later session in a
+    // multi-session run loads the same baseline the app would have.
+    if (state.baselineJustEstablished) await baselineService.save();
 
     // A new feature window closed iff featureHistory gained an entry
     const lastFeature = state.featureHistory[state.featureHistory.length - 1];
@@ -184,6 +233,10 @@ export async function replaySession(
     }
   }
 
+  // Mirror what the app does when a session ends: flush partial baseline
+  // progress so the next session resumes from it.
+  if (baselineService.isLearning()) await baselineService.saveProgress();
+
   // Collapse consecutive same-dance windows into timeline segments
   const danceTimeline: DanceSegment[] = [];
   const danceDistribution: Record<string, number> = {};
@@ -217,6 +270,114 @@ export async function replaySession(
     baselineEstablished: !baselineService.isLearning(),
     baseline: baselineService.getBaseline(),
   };
+}
+
+/**
+ * Replay several recordings as CONSECUTIVE SESSIONS of one user.
+ *
+ * A single replaySession() call only ever proves the pipeline works from a
+ * cold start with a baseline it learned itself. Real use is a sequence:
+ * session 1 learns the baseline, it is written to storage, and every later
+ * session loads it and is judged against it. Each recording here therefore
+ * gets a fresh BaselineService loaded from shared storage — exactly what a
+ * cold app launch does — while the baseline itself carries across.
+ *
+ * `options.baseline` seeds storage before the first recording, i.e. a user
+ * who already had a baseline before any of these sessions.
+ */
+export async function replaySessions(
+  recordings: ReplayBeat[][],
+  options: MultiSessionOptions = {},
+): Promise<MultiSessionResult> {
+  const storage = new MemoryStorage();
+  if (options.baseline) {
+    await storage.setItem(BASELINE_KEY, JSON.stringify(options.baseline));
+  }
+
+  const applyGate = options.applyQualityGate ?? true;
+  const sessions: ReplayResult[] = [];
+  const revisions: string[] = [];
+  let baselineEstablishedInSession = -1;
+  let sharedCore: PipelineCore | null = null;
+  let sharedService: BaselineService | null = null;
+
+  const seeded = await storage.getItem(BASELINE_KEY);
+  if (seeded) revisions.push(seeded);
+
+  for (let i = 0; i < recordings.length; i++) {
+    // Fresh service per session, loaded from storage: the baseline survives
+    // only because it was persisted, never because an object stayed alive.
+    // Reused pipelines keep their service, as the live hook's refs do.
+    let baselineService: BaselineService;
+    if (options.reusePipeline && sharedService) {
+      baselineService = sharedService;
+    } else {
+      baselineService = new BaselineService(storage);
+      await baselineService.load();
+      sharedService = baselineService;
+    }
+    const hadBaseline = !baselineService.isLearning();
+
+    let core: PipelineCore;
+    if (options.reusePipeline && sharedCore) {
+      sharedCore.reset();
+      core = sharedCore;
+    } else {
+      core = new PipelineCore(baselineService);
+      sharedCore = core;
+    }
+
+    const result = await runRecording(recordings[i], core, baselineService, applyGate);
+    sessions.push(result);
+
+    if (!hadBaseline && result.baselineEstablished && baselineEstablishedInSession === -1) {
+      baselineEstablishedInSession = i;
+    }
+
+    const stored = await storage.getItem(BASELINE_KEY);
+    if (stored && stored !== revisions[revisions.length - 1]) revisions.push(stored);
+  }
+
+  const finalRaw = await storage.getItem(BASELINE_KEY);
+  return {
+    sessions,
+    baselineEstablishedInSession,
+    finalBaseline: finalRaw ? (JSON.parse(finalRaw) as PersonalBaseline) : null,
+    baselineRevisions: revisions.length,
+  };
+}
+
+/**
+ * Human-readable summary of a multi-session run: one block per session plus
+ * how the shared baseline behaved across all of them.
+ */
+export function formatMultiSessionReport(
+  result: MultiSessionResult,
+  labels: string[] = [],
+): string {
+  const lines: string[] = [];
+  lines.push('=== Multi-Session Replay Report ===');
+  lines.push(`Sessions: ${result.sessions.length}`);
+  if (result.baselineEstablishedInSession === -1) {
+    lines.push('Baseline: never established across these sessions');
+  } else {
+    lines.push(`Baseline: established in session ${result.baselineEstablishedInSession + 1}, then reused`);
+  }
+  lines.push(`Baseline revisions: ${result.baselineRevisions} (a frozen baseline gives 1)`);
+  lines.push('');
+
+  result.sessions.forEach((s, i) => {
+    const min = Math.round(s.durationMs / 60000);
+    const label = labels[i] ?? `Session ${i + 1}`;
+    const graded = s.windows.filter(w => w.changeLevel !== 'learning');
+    const alerts = graded.filter(w => w.changeLevel === 'alert').length;
+    const notices = graded.filter(w => w.changeLevel === 'notice').length;
+    lines.push(`${label}: ${s.acceptedBeats} beats, ${min}m, ${s.gapCount} gap(s)`);
+    lines.push(`  dance: ${s.finalDance ?? 'unknown'} • ${s.danceTimeline.length} segment(s)`);
+    lines.push(`  change: ${notices} notice / ${alerts} alert of ${graded.length} graded windows • max ${s.maxMahalanobisDistance.toFixed(2)}σ`);
+  });
+
+  return lines.join('\n');
 }
 
 /** Human-readable one-page summary of a replay, for logs or research notes. */

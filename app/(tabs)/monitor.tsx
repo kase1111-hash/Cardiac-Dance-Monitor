@@ -73,6 +73,7 @@ export default function MonitorScreen() {
   }, [camera]);
   const {
     state, processPPI, reset, resetBaseline, forceEstablishBaseline, getBaselineService,
+    flushBaselineProgress,
   } = useMonitorPipeline(appStorage);
 
   // The baseline's true recording time. Passing Date.now() here made the
@@ -348,6 +349,9 @@ export default function MonitorScreen() {
    * endSession() nulls its own state and returns null on a second call.
    */
   const flushSession = useCallback(async () => {
+    // Baseline learning accumulates across sessions, so whatever progress this
+    // session made has to reach storage before the app goes away.
+    void flushBaselineProgress();
     if (!sessionStarted.current) return;
     const session = endSession();
     sessionStarted.current = false;
@@ -362,7 +366,7 @@ export default function MonitorScreen() {
         );
       }
     }
-  }, [endSession]);
+  }, [endSession, flushBaselineProgress]);
 
   // Save on unmount and when the app leaves the foreground. Without this a
   // long recording that never hit a source change or a 5-minute disconnect
