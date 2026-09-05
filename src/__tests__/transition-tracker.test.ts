@@ -7,8 +7,7 @@
  * - Different dance sustained ≥ 30s (~4 windows) → transition committed
  * - Quick flicker (A → B → A in 3 windows) → no transition
  */
-import { TransitionTracker, type TransitionEvent } from '../dance/transition-tracker';
-import { DANCE_UPDATE_INTERVAL } from '../../shared/constants';
+import { TransitionTracker } from '../dance/transition-tracker';
 
 // Each window is DANCE_UPDATE_INTERVAL (10) beats.
 // At ~60 BPM that's ~10s per window. We'll use explicit timestamps.

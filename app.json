@@ -4,9 +4,16 @@
     "slug": "cardiac-dance-monitor",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "scheme": "cardiac-dance-monitor",
     "userInterfaceStyle": "dark",
+    "backgroundColor": "#05050a",
     "newArchEnabled": true,
+    "androidStatusBar": {
+      "barStyle": "light-content",
+      "backgroundColor": "#05050a",
+      "translucent": true
+    },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.cardiacdance.monitor",
@@ -17,18 +24,26 @@
     },
     "android": {
       "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#05050a"
       },
       "package": "com.cardiacdance.monitor",
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.BLUETOOTH_SCAN",
-        "android.permission.BLUETOOTH_CONNECT",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "android.permission.BLUETOOTH_CONNECT"
       ]
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 160,
+          "resizeMode": "contain",
+          "backgroundColor": "#05050a"
+        }
+      ],
       [
         "react-native-ble-plx",
         {
@@ -47,7 +62,6 @@
         {
           "android": {
             "kotlinVersion": "1.9.25",
-            "composeCompilerVersion": "1.5.14",
             "compileSdkVersion": 35,
             "targetSdkVersion": 34,
             "minSdkVersion": 26

@@ -16,7 +16,7 @@ const QUALITY_COLORS: Record<SignalQuality, string> = {
 const QUALITY_LABELS: Record<SignalQuality, string> = {
   good: 'Good',
   fair: 'Fair',
-  poor: 'Hold still',
+  poor: 'Weak signal',
   disconnected: 'No signal',
 };
 
@@ -24,7 +24,7 @@ interface Props {
   quality: SignalQuality;
 }
 
-export function SignalQualityBadge({ quality }: Props) {
+function SignalQualityBadgeComponent({ quality }: Props) {
   const color = QUALITY_COLORS[quality];
 
   return (
@@ -34,6 +34,8 @@ export function SignalQualityBadge({ quality }: Props) {
     </View>
   );
 }
+
+export const SignalQualityBadge = React.memo(SignalQualityBadgeComponent);
 
 const styles = StyleSheet.create({
   container: {

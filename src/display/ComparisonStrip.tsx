@@ -74,7 +74,7 @@ function SparklineRow({ title, color, values, domain, valueText, axisLabels, cha
   );
 }
 
-export function ComparisonStrip({ history, width }: Props) {
+function ComparisonStripComponent({ history, width }: Props) {
   // Inner padding (12) on each side, and 24px reserved for axis labels.
   const chartWidth = Math.max(60, width - 24 - 24);
 
@@ -123,8 +123,13 @@ export function ComparisonStrip({ history, width }: Props) {
   );
 }
 
+export const ComparisonStrip = React.memo(ComparisonStripComponent);
+
 const styles = StyleSheet.create({
   container: {
+    // Same width as the torus, so it must be centred like the torus — it
+    // was hugging the left edge on any phone wider than 332 px.
+    alignSelf: 'center',
     backgroundColor: '#0a0a1a',
     borderRadius: 12,
     borderWidth: 1,
@@ -141,7 +146,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   empty: {
-    color: '#475569',
+    color: '#64748b',
     fontSize: 12,
     paddingVertical: 12,
   },
@@ -181,12 +186,12 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
   },
   axisLabel: {
-    color: '#475569',
+    color: '#64748b',
     fontSize: 9,
     fontFamily: 'monospace',
   },
   caption: {
-    color: '#475569',
+    color: '#64748b',
     fontSize: 11,
     lineHeight: 16,
     marginTop: 2,

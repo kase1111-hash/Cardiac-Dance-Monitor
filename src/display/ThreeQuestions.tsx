@@ -3,7 +3,7 @@
  *
  * 1. "Is it dancing?" → "YES" (green) or "Checking..." (grey)
  * 2. "Which dance?" → dance name (colored) or "Uncertain" or "..." (no data)
- * 3. "Has it changed?" → "Learning..." / "Stable" / "Shifted" / "Changed"
+ * 3. "Has it changed?" → "Learning..." / "Checking..." / "Stable" / "Shifted" / "Changed"
  *
  * Per SPEC Section 4.1.
  */
@@ -19,6 +19,13 @@ interface Props {
   isDancing: boolean;
   currentDance: DanceMatch | null;
   changeLevel: ChangeLevel;
+  /**
+   * Whether the baseline is still being learned. The pipeline reports
+   * 'learning' for a few windows after any geometry reset even when a
+   * baseline exists; that is a warm-up, not learning, and must not read as
+   * "the baseline was lost" right under an established-baseline indicator.
+   */
+  isLearningBaseline?: boolean;
 }
 
 const CHANGE_DISPLAY: Record<ChangeLevel, { label: string; color: string }> = {
@@ -28,18 +35,23 @@ const CHANGE_DISPLAY: Record<ChangeLevel, { label: string; color: string }> = {
   alert: { label: 'Changed', color: '#ef4444' },
 };
 
-export function ThreeQuestions({ isDancing, currentDance, changeLevel }: Props) {
+function ThreeQuestionsComponent({ isDancing, currentDance, changeLevel, isLearningBaseline = true }: Props) {
   // Question 1: Is it dancing?
   const q1Color = isDancing ? '#22c55e' : '#64748b';
   const q1Answer = isDancing ? 'YES' : 'Checking...';
 
-  // Question 2: Which dance?
-  const isUncertain = !currentDance || currentDance.confidence < CONFIDENCE_UNCERTAIN;
+  // Question 2: Which dance? (same guard as DanceCard: NaN is not confident)
+  const isUncertain = !currentDance
+    || !Number.isFinite(currentDance.confidence)
+    || currentDance.confidence < CONFIDENCE_UNCERTAIN;
   const q2Answer = !currentDance ? '...' : isUncertain ? 'Uncertain' : currentDance.name.replace('The ', '');
   const q2Color = isUncertain ? '#64748b' : getDanceColor(currentDance?.name ?? null);
 
   // Question 3: Has it changed?
-  const { label: q3Answer, color: q3Color } = CHANGE_DISPLAY[changeLevel];
+  const warmingUp = changeLevel === 'learning' && !isLearningBaseline;
+  const { label: q3Answer, color: q3Color } = warmingUp
+    ? { label: 'Checking...', color: '#64748b' }
+    : CHANGE_DISPLAY[changeLevel];
 
   return (
     <View style={styles.row}>
@@ -50,6 +62,8 @@ export function ThreeQuestions({ isDancing, currentDance, changeLevel }: Props) 
   );
 }
 
+export const ThreeQuestions = React.memo(ThreeQuestionsComponent);
+
 function QuestionCard({
   question, answer, answerColor,
 }: {
@@ -58,7 +72,9 @@ function QuestionCard({
   return (
     <View style={styles.card}>
       <Text style={styles.question}>{question}</Text>
-      <Text style={[styles.answer, { color: answerColor }]}>{answer}</Text>
+      <Text style={[styles.answer, { color: answerColor }]} numberOfLines={1} adjustsFontSizeToFit>
+        {answer}
+      </Text>
     </View>
   );
 }

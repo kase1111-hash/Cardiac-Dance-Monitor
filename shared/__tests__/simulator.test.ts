@@ -5,7 +5,6 @@
  * Test vectors from SPEC.md Section 10 (Simulation).
  */
 import { RhythmSimulator, generateSimulatedPPIs } from '../simulator';
-import { QualityGate } from '../quality-gate';
 import { toAngle, mengerCurvature, giniCoefficient, median, mean, std } from '../torus-engine';
 import { matchDance } from '../dance-matcher';
 import { TORUS_WINDOW, DANCE_UPDATE_INTERVAL, PPI_MIN, PPI_MAX } from '../constants';
@@ -105,7 +104,7 @@ describe('Simulation scenarios', () => {
 
 describe('RhythmSimulator', () => {
   test('generates PPIs within valid range', () => {
-    const scenarios: Array<'nsr' | 'chf' | 'af' | 'pvc'> = ['nsr', 'chf', 'af', 'pvc'];
+    const scenarios: ('nsr' | 'chf' | 'af' | 'pvc')[] = ['nsr', 'chf', 'af', 'pvc'];
     for (const scenario of scenarios) {
       const ppis = generateSimulatedPPIs(scenario, 100);
       expect(ppis.length).toBe(100);

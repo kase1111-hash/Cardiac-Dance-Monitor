@@ -3,6 +3,10 @@
  * auto-ends when disconnected > 5 minutes.
  *
  * Per SPEC Section 7.1: No explicit start/stop required.
+ *
+ * snapshotSession() builds a Session from the recording in progress without
+ * ending it, so the History tab can show (and export) the current session
+ * while the Monitor keeps recording.
  */
 import { useRef, useCallback, useState } from 'react';
 import type { DanceMatch } from '../../shared/types';
@@ -17,6 +21,30 @@ interface SessionRecorderState {
   elapsedMs: number;
 }
 
+interface SessionData {
+  id: string;
+  startTime: number;
+  beatCount: number;
+  /** Beats seen per dance name — decides the dominant dance. */
+  danceBeats: Record<string, number>;
+  danceTransitions: { timestamp: number; from: string; to: string }[];
+  changeEvents: Session['changeEvents'];
+  lastDance: string | null;
+  lastMatch: DanceMatch | null;
+  // Running sums instead of per-beat arrays: an overnight recording pushed
+  // four numbers per beat into uncapped arrays and sorted them at the end.
+  bpmSum: number;
+  bpmCount: number;
+  giniSum: number;
+  giniCount: number;
+  /** One κ per feature window (changes every 10 beats), for the median. */
+  kappaWindows: number[];
+  /** Sum of raw PPIs, for a rate estimate before any dance window closes. */
+  ppiSum: number;
+  ppiCount: number;
+  rawBeats: RawBeat[];
+}
+
 export function useSessionRecorder() {
   const [recState, setRecState] = useState<SessionRecorderState>({
     isRecording: false,
@@ -26,19 +54,7 @@ export function useSessionRecorder() {
     elapsedMs: 0,
   });
 
-  const sessionData = useRef<{
-    id: string;
-    startTime: number;
-    beatCount: number;
-    danceMatches: DanceMatch[];
-    danceTransitions: Array<{ timestamp: number; from: string; to: string }>;
-    changeEvents: Session['changeEvents'];
-    lastDance: string | null;
-    bpmAccum: number[];
-    kappaAccum: number[];
-    giniAccum: number[];
-    rawBeats: RawBeat[];
-  } | null>(null);
+  const sessionData = useRef<SessionData | null>(null);
 
   const startSession = useCallback(() => {
     const now = Date.now();
@@ -47,13 +63,18 @@ export function useSessionRecorder() {
       id,
       startTime: now,
       beatCount: 0,
-      danceMatches: [],
+      danceBeats: {},
       danceTransitions: [],
       changeEvents: [],
       lastDance: null,
-      bpmAccum: [],
-      kappaAccum: [],
-      giniAccum: [],
+      lastMatch: null,
+      bpmSum: 0,
+      bpmCount: 0,
+      giniSum: 0,
+      giniCount: 0,
+      kappaWindows: [],
+      ppiSum: 0,
+      ppiCount: 0,
       rawBeats: [],
     };
     setRecState({
@@ -90,14 +111,20 @@ export function useSessionRecorder() {
   }, []);
 
   const recordBeat = useCallback((danceMatch: DanceMatch | null, rawBeat?: Omit<RawBeat, 'dance' | 'confidence' | 'kappa' | 'gini' | 'spread'>) => {
-    if (!sessionData.current) return;
+    const sd = sessionData.current;
+    if (!sd) return;
 
-    sessionData.current.beatCount++;
+    sd.beatCount++;
+
+    if (rawBeat) {
+      sd.ppiSum += rawBeat.ppi_ms;
+      sd.ppiCount++;
+    }
 
     // Store per-beat raw data (capped)
-    if (rawBeat && sessionData.current.rawBeats.length < RAW_BEAT_CAP) {
-      const lastMatch = danceMatch ?? sessionData.current.danceMatches[sessionData.current.danceMatches.length - 1];
-      sessionData.current.rawBeats.push({
+    if (rawBeat && sd.rawBeats.length < RAW_BEAT_CAP) {
+      const lastMatch = danceMatch ?? sd.lastMatch;
+      sd.rawBeats.push({
         ...rawBeat,
         kappa: lastMatch?.kappaMedian ?? 0,
         gini: lastMatch?.gini ?? 0,
@@ -108,66 +135,80 @@ export function useSessionRecorder() {
     }
 
     if (danceMatch) {
-      sessionData.current.danceMatches.push(danceMatch);
-      sessionData.current.bpmAccum.push(danceMatch.bpm);
-      sessionData.current.kappaAccum.push(danceMatch.kappaMedian);
-      sessionData.current.giniAccum.push(danceMatch.gini);
+      sd.bpmSum += danceMatch.bpm;
+      sd.bpmCount++;
+      sd.giniSum += danceMatch.gini;
+      sd.giniCount++;
+      // The pipeline carries the same match object for 10 beats; one κ per
+      // window is what the median should be over.
+      if (danceMatch !== sd.lastMatch) {
+        sd.kappaWindows.push(danceMatch.kappaMedian);
+        if (sd.kappaWindows.length > RAW_BEAT_CAP) sd.kappaWindows.shift();
+      }
+      sd.lastMatch = danceMatch;
 
       // Track dance transitions
       const currentDance = danceMatch.name;
-      if (sessionData.current.lastDance && currentDance !== sessionData.current.lastDance) {
-        sessionData.current.danceTransitions.push({
+      sd.danceBeats[currentDance] = (sd.danceBeats[currentDance] ?? 0) + 1;
+      if (sd.lastDance && currentDance !== sd.lastDance) {
+        sd.danceTransitions.push({
           timestamp: Date.now(),
-          from: sessionData.current.lastDance,
+          from: sd.lastDance,
           to: currentDance,
         });
       }
-      sessionData.current.lastDance = currentDance;
+      sd.lastDance = currentDance;
     }
 
     const now = Date.now();
     setRecState(prev => ({
       ...prev,
-      beatCount: sessionData.current!.beatCount,
-      elapsedMs: now - sessionData.current!.startTime,
+      beatCount: sd.beatCount,
+      elapsedMs: now - sd.startTime,
     }));
   }, []);
 
-  const endSession = useCallback((): Session | null => {
-    if (!sessionData.current) return null;
-
+  /** Build a Session from the recording so far (does not end it). */
+  const snapshotSession = useCallback((): Session | null => {
     const sd = sessionData.current;
+    if (!sd) return null;
     const now = Date.now();
 
-    // Find dominant dance (most frequent)
-    const danceCounts: Record<string, number> = {};
-    for (const m of sd.danceMatches) {
-      danceCounts[m.name] = (danceCounts[m.name] ?? 0) + 1;
-    }
-    const dominantDance = Object.entries(danceCounts)
+    // Dominant dance = the one seen on the most beats
+    const dominantDance = Object.entries(sd.danceBeats)
       .sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'Unknown';
 
-    const mean = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
-    const sortedKappas = [...sd.kappaAccum].sort((a, b) => a - b);
+    const sortedKappas = [...sd.kappaWindows].sort((a, b) => a - b);
     const medianKappa = sortedKappas.length > 0
       ? sortedKappas[Math.floor(sortedKappas.length / 2)]
       : 0;
 
-    const session: Session = {
+    // Before the first dance window closes there is no windowed BPM; fall
+    // back to the raw intervals so a short session is not saved as "0 BPM".
+    const bpmMean = sd.bpmCount > 0
+      ? Math.round(sd.bpmSum / sd.bpmCount)
+      : sd.ppiCount > 0 ? Math.round(60000 / (sd.ppiSum / sd.ppiCount)) : 0;
+
+    return {
       id: sd.id,
       startTime: sd.startTime,
       endTime: now,
       dominantDance,
       beatCount: sd.beatCount,
-      changeEvents: sd.changeEvents,
-      danceTransitions: sd.danceTransitions,
+      changeEvents: [...sd.changeEvents],
+      danceTransitions: [...sd.danceTransitions],
       summaryStats: {
-        bpmMean: Math.round(mean(sd.bpmAccum)),
+        bpmMean,
         kappaMedian: medianKappa,
-        giniMean: parseFloat(mean(sd.giniAccum).toFixed(3)),
+        giniMean: sd.giniCount > 0 ? parseFloat((sd.giniSum / sd.giniCount).toFixed(3)) : 0,
       },
       rawBeats: sd.rawBeats,
     };
+  }, []);
+
+  const endSession = useCallback((): Session | null => {
+    const session = snapshotSession();
+    if (!session) return null;
 
     sessionData.current = null;
     setRecState({
@@ -179,13 +220,14 @@ export function useSessionRecorder() {
     });
 
     return session;
-  }, []);
+  }, [snapshotSession]);
 
   return {
     recState,
     startSession,
     recordBeat,
     recordChangeEvent,
+    snapshotSession,
     endSession,
   };
 }

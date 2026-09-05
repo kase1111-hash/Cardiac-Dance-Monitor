@@ -17,6 +17,13 @@
  * accumulate correctly across sessions (the time between them is not rhythm
  * anyone observed).
  *
+ * NAMESPACES. A baseline describes one rhythm source. A simulated rhythm and
+ * a real person are different subjects, so their baselines are stored under
+ * different keys and switching source no longer wipes anything: the
+ * `simulated` namespace suffixes the keys, while the `sensor` namespace uses
+ * the original un-suffixed keys so a real baseline learned by an earlier
+ * build is still found.
+ *
  * Per SPEC Section 3.1.
  */
 import type { PersonalBaseline } from '../../shared/types';
@@ -29,6 +36,18 @@ import { mean, std } from '../../shared/torus-engine';
 export const BASELINE_KEY = 'personal_baseline';
 /** Partial learning progress, kept only until a baseline is established. */
 export const BASELINE_PROGRESS_KEY = 'personal_baseline_progress';
+
+/** Namespace whose keys are the legacy un-suffixed ones. */
+export const DEFAULT_BASELINE_NAMESPACE = 'sensor';
+
+/**
+ * Feature windows a forced baseline needs. Two windows produced SDs so tiny
+ * that an UNCHANGED rhythm read as 20-46% false alerts; ten windows measured
+ * 3.8% transient notices and zero false alerts, and 200 beats always supply
+ * at least 16 windows anyway. This floor only matters if the raw-beat rule
+ * is ever relaxed.
+ */
+export const FORCE_ESTABLISH_MIN_SAMPLES = 10;
 
 /**
  * Feature samples retained while learning. A baseline needs ~35, and any
@@ -51,8 +70,24 @@ interface BaselineProgress {
   bpmValues: number[];
 }
 
+export interface BaselineServiceOptions {
+  /** Storage namespace; see the module comment. Defaults to the legacy keys. */
+  namespace?: string;
+}
+
+function isUsableBaseline(value: unknown): value is PersonalBaseline {
+  if (typeof value !== 'object' || value === null) return false;
+  const b = value as Record<string, unknown>;
+  const numeric = [
+    'kappaMean', 'kappaSd', 'giniMean', 'giniSd', 'spreadMean', 'spreadSd',
+    'bpmMean', 'recordedAt', 'beatCount',
+  ];
+  return numeric.every(k => typeof b[k] === 'number' && Number.isFinite(b[k] as number));
+}
+
 export class BaselineService {
   private storage: StorageAdapter;
+  private namespace: string;
 
   // Accumulation buffers during learning
   private kappaValues: number[] = [];
@@ -70,9 +105,20 @@ export class BaselineService {
   // Established baseline (frozen once set)
   private baseline: PersonalBaseline | null = null;
   private frozen = false;
+  private loaded = false;
 
-  constructor(storage: StorageAdapter) {
+  constructor(storage: StorageAdapter, options: BaselineServiceOptions = {}) {
     this.storage = storage;
+    this.namespace = options.namespace ?? DEFAULT_BASELINE_NAMESPACE;
+  }
+
+  /** Storage namespace currently in use. */
+  getNamespace(): string {
+    return this.namespace;
+  }
+
+  private key(base: string): string {
+    return this.namespace === DEFAULT_BASELINE_NAMESPACE ? base : `${base}:${this.namespace}`;
   }
 
   /**
@@ -83,23 +129,63 @@ export class BaselineService {
    * left off rather than starting from zero.
    */
   async load(): Promise<PersonalBaseline | null> {
-    const raw = await this.storage.getItem(BASELINE_KEY);
+    this.loaded = true;
+    let raw: string | null = null;
+    try {
+      raw = await this.storage.getItem(this.key(BASELINE_KEY));
+    } catch {
+      // Unreadable storage: behave as if nothing was stored.
+    }
     if (raw) {
+      let parsed: unknown = null;
       try {
-        this.baseline = JSON.parse(raw) as PersonalBaseline;
+        parsed = JSON.parse(raw);
+      } catch {
+        // fall through
+      }
+      if (isUsableBaseline(parsed)) {
+        this.baseline = parsed;
         this.frozen = true;
         return this.baseline;
+      }
+      // A truncated or hand-edited record used to be accepted as-is and froze
+      // a baseline of NaNs — every distance was then NaN, which fails both
+      // threshold checks and pinned the UI to 'notice' forever.
+      console.warn('BASELINE: stored baseline is unusable — discarding');
+      try {
+        await this.storage.setItem(this.key(BASELINE_KEY), '');
       } catch {
-        // Fall through: a corrupt baseline means we are still learning.
+        // ignore
       }
     }
     await this.loadProgress();
     return null;
   }
 
+  /**
+   * Point the service at another namespace and load whatever is stored
+   * there. In-progress learning for the previous namespace is checkpointed
+   * first. A no-op (returning the current baseline) when the namespace is
+   * unchanged and already loaded.
+   */
+  async activateNamespace(namespace: string): Promise<PersonalBaseline | null> {
+    if (namespace === this.namespace) {
+      return this.loaded ? this.baseline : this.load();
+    }
+    await this.saveProgress();
+    this.clearMemory();
+    this.namespace = namespace;
+    return this.load();
+  }
+
   /** Restore partial learning progress written by an earlier session. */
   private async loadProgress(): Promise<void> {
-    const raw = await this.storage.getItem(BASELINE_PROGRESS_KEY);
+    let raw: string | null = null;
+    try {
+      raw = await this.storage.getItem(this.key(BASELINE_PROGRESS_KEY));
+    } catch {
+      return;
+    }
     if (!raw) return;
     try {
       const p = JSON.parse(raw) as BaselineProgress;
@@ -135,7 +221,7 @@ export class BaselineService {
       bpmValues: this.bpmValues,
     };
     try {
-      await this.storage.setItem(BASELINE_PROGRESS_KEY, JSON.stringify(progress));
+      await this.storage.setItem(this.key(BASELINE_PROGRESS_KEY), JSON.stringify(progress));
     } catch {
       // Storage full or unavailable — learning continues in memory.
     }
@@ -167,9 +253,20 @@ export class BaselineService {
     );
   }
 
-  /** Raw beat count accumulated during learning. */
+  /**
+   * Beats behind the baseline: the raw count accumulated while learning, or
+   * the count the established baseline was built from. A baseline restored
+   * from storage previously reported 0 here (rawBeats is not persisted), so
+   * every relaunch read "Baseline: 3m ago (0 samples)".
+   */
   getSampleCount(): number {
+    if (this.frozen && this.baseline) return this.baseline.beatCount;
     return this.rawBeats;
+  }
+
+  /** Feature windows collected while learning. */
+  getFeatureSampleCount(): number {
+    return this.totalSamples;
   }
 
   /** Rhythm observed so far toward the 5-minute rule, in ms. */
@@ -265,16 +362,24 @@ export class BaselineService {
     this.frozen = true;
   }
 
-  /** Persist the current baseline to storage, retiring the progress record. */
-  async save(): Promise<void> {
-    if (this.baseline) {
-      await this.storage.setItem(BASELINE_KEY, JSON.stringify(this.baseline));
-      await this.storage.setItem(BASELINE_PROGRESS_KEY, '');
+  /**
+   * Persist the current baseline to storage, retiring the progress record.
+   * Returns false when the write failed (storage full); the baseline stays
+   * in memory for this session either way.
+   */
+  async save(): Promise<boolean> {
+    if (!this.baseline) return false;
+    try {
+      await this.storage.setItem(this.key(BASELINE_KEY), JSON.stringify(this.baseline));
+      await this.storage.setItem(this.key(BASELINE_PROGRESS_KEY), '');
+      return true;
+    } catch (e: any) {
+      console.warn('BASELINE_SAVE_FAILED:', e?.message ?? e);
+      return false;
     }
   }
 
-  /** Reset baseline — clears stored data and re-enters learning mode. */
-  async reset(): Promise<void> {
+  private clearMemory(): void {
     this.baseline = null;
     this.frozen = false;
     this.kappaValues = [];
@@ -285,22 +390,36 @@ export class BaselineService {
     this.rawBeats = 0;
     this.observedMs = 0;
     this.lastBeatAt = null;
-    await this.storage.setItem(BASELINE_KEY, '');
-    // Partial progress must go too, or "start over" silently resumes from
-    // the discarded baseline's learning data.
-    await this.storage.setItem(BASELINE_PROGRESS_KEY, '');
+    this.loaded = false;
+  }
+
+  /** Reset baseline — clears stored data and re-enters learning mode. */
+  async reset(): Promise<void> {
+    this.clearMemory();
+    this.loaded = true;
+    try {
+      await this.storage.setItem(this.key(BASELINE_KEY), '');
+      // Partial progress must go too, or "start over" silently resumes from
+      // the discarded baseline's learning data.
+      await this.storage.setItem(this.key(BASELINE_PROGRESS_KEY), '');
+    } catch (e: any) {
+      console.warn('BASELINE_RESET_WRITE_FAILED:', e?.message ?? e);
+    }
   }
 
   /**
-   * Force-establish the baseline (for testing — skips duration check).
-   * Requires at least BASELINE_MIN_BEATS samples.
+   * Force-establish the baseline (demo/testing — skips the 5-minute rule).
+   * Requires BASELINE_MIN_BEATS raw beats and FORCE_ESTABLISH_MIN_SAMPLES
+   * feature windows.
    */
   forceEstablish(): boolean {
     // BOTH conditions are required. With `&&`, 200 raw beats alone sufficed
     // even with zero feature samples, so establish() averaged empty arrays and
     // froze an all-zero baseline — every later distance then divided by the
     // SD floor against a zero mean and pinned the UI to a permanent alert.
-    if (this.rawBeats < BASELINE_MIN_BEATS || this.totalSamples < 2) return false;
+    if (this.rawBeats < BASELINE_MIN_BEATS || this.totalSamples < FORCE_ESTABLISH_MIN_SAMPLES) {
+      return false;
+    }
     this.establish();
     return true;
   }

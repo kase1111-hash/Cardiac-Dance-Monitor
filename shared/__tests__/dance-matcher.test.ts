@@ -4,7 +4,7 @@
  * Also tests with values from the actual pipeline (60-beat runs).
  */
 import { matchDance } from '../dance-matcher';
-import { DANCE_CENTROIDS, CONFIDENCE_UNCERTAIN } from '../constants';
+import { DANCE_CENTROIDS } from '../constants';
 
 describe('matchDance', () => {
   // At-centroid tests: feeding exact centroid values should match with >90% confidence

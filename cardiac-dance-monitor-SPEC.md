@@ -1,3 +1,10 @@
+> **Historical design spec (pre-implementation).** This document describes the
+> original plan. For current behaviour see [CLAUDE.md](CLAUDE.md) and
+> [innovo-ble-protocol.md](innovo-ble-protocol.md); where they differ, the code and
+> CLAUDE.md win. Notably: the primary BLE device is the Innovo iP900BP-B over the
+> Nordic UART service / characteristic 0xFFF1 (not a 0x180D heart-rate strap), and
+> there is no  directory in this repository.
+
 # SPEC.md — Cardiac Dance Monitor
 
 ## Overview

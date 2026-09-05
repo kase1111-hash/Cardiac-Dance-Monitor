@@ -5,40 +5,66 @@
  * (src/replay/session-replay.ts) runs the identical code path.
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { BaselineService } from '../baseline/baseline-service';
+import {
+  BaselineService, BASELINE_KEY, FORCE_ESTABLISH_MIN_SAMPLES,
+} from '../baseline/baseline-service';
 import { PipelineCore, type PipelineState } from '../pipeline/pipeline-core';
 import { MemoryStorage, type StorageAdapter } from '../session/session-store';
+import { BASELINE_MIN_BEATS } from '../../shared/constants';
+import { IS_DEV } from '../../shared/debug';
 
 export type { PipelineState, FeatureSample } from '../pipeline/pipeline-core';
 
-export function useMonitorPipeline(storage?: StorageAdapter) {
+/**
+ * Baseline namespaces. A simulated rhythm and a real person are different
+ * subjects; keeping their baselines apart means switching source no longer
+ * destroys either. All real sensors share one — they measure the same heart.
+ */
+export type BaselineNamespace = 'simulated' | 'sensor';
+
+export interface ForceBaselineResult {
+  established: boolean;
+  rawBeats: number;
+  featureSamples: number;
+  requiredBeats: number;
+  requiredSamples: number;
+}
+
+export function useMonitorPipeline(
+  storage?: StorageAdapter,
+  namespace: BaselineNamespace = 'simulated',
+) {
   const baselineService = useRef<BaselineService | null>(null);
   if (!baselineService.current) {
-    baselineService.current = new BaselineService(storage ?? new MemoryStorage());
+    baselineService.current = new BaselineService(storage ?? new MemoryStorage(), { namespace });
   }
   const core = useRef<PipelineCore | null>(null);
   if (!core.current) {
-    core.current = new PipelineCore(baselineService.current, { verbose: true });
+    // Per-beat diagnostics are for development builds only; in release they
+    // cost a native log write per beat for nobody.
+    core.current = new PipelineCore(baselineService.current, { verbose: IS_DEV });
   }
 
   const [state, setState] = useState<PipelineState>(core.current.getState());
 
-  // Restore a previously established baseline so it survives app restarts.
+  // Load the baseline for the active namespace (on mount and whenever the
+  // source kind changes) so an established baseline survives app restarts
+  // and source switches.
   useEffect(() => {
     let cancelled = false;
-    baselineService.current!.load().then(loaded => {
-      if (loaded && !cancelled) {
-        console.log('BASELINE_LOADED: established', new Date(loaded.recordedAt).toISOString(), 'beats=', loaded.beatCount);
-        setState(prev => ({
-          ...prev,
-          isLearningBaseline: false,
-          baselineLearningProgress: 1,
-          baselineBeatCount: loaded.beatCount,
-        }));
+    const bs = baselineService.current!;
+    bs.activateNamespace(namespace).then(loaded => {
+      if (cancelled) return;
+      if (loaded && IS_DEV) {
+        console.log(
+          'BASELINE_LOADED:', namespace, 'beats=', loaded.beatCount,
+          Number.isFinite(loaded.recordedAt) ? new Date(loaded.recordedAt).toISOString() : '',
+        );
       }
-    });
+      setState(core.current!.syncBaselineState());
+    }).catch(e => console.warn('BASELINE_LOAD_FAILED:', e?.message ?? e));
     return () => { cancelled = true; };
-  }, []);
+  }, [namespace]);
 
   /**
    * Feed one beat through the pipeline.
@@ -60,8 +86,12 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
     return snapshot;
   }, []);
 
-  const reset = useCallback(() => {
-    core.current!.reset();
+  /**
+   * Reset the geometry. `keepHistory` preserves the rate-vs-geometry trend so
+   * a simulated scenario switch shows before and after in one strip.
+   */
+  const reset = useCallback((options: { keepHistory?: boolean } = {}) => {
+    core.current!.reset(options);
     setState(core.current!.getState());
   }, []);
 
@@ -70,19 +100,21 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
     setState(core.current!.onBaselineReset());
   }, []);
 
-  /** Force-establish baseline (demo/testing — skips duration check). */
-  const forceEstablishBaseline = useCallback(() => {
-    const established = baselineService.current!.forceEstablish();
+  /** Force-establish baseline (demo/testing — skips the 5-minute rule). */
+  const forceEstablishBaseline = useCallback((): ForceBaselineResult => {
+    const bs = baselineService.current!;
+    const established = bs.forceEstablish();
     if (established) {
-      void baselineService.current!.save();
-      setState(prev => ({
-        ...prev,
-        isLearningBaseline: false,
-        baselineLearningProgress: 1,
-        baselineBeatCount: baselineService.current!.getSampleCount(),
-      }));
+      void bs.save();
+      setState(core.current!.syncBaselineState());
     }
-    return established;
+    return {
+      established,
+      rawBeats: bs.getSampleCount(),
+      featureSamples: bs.getFeatureSampleCount(),
+      requiredBeats: BASELINE_MIN_BEATS,
+      requiredSamples: FORCE_ESTABLISH_MIN_SAMPLES,
+    };
   }, []);
 
   const getBaselineService = useCallback(() => baselineService.current!, []);
@@ -102,3 +134,5 @@ export function useMonitorPipeline(storage?: StorageAdapter) {
     getBaselineService, flushBaselineProgress,
   };
 }
+
+export { BASELINE_KEY };

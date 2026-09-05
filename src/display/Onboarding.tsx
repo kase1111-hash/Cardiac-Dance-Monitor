@@ -10,6 +10,7 @@ import React, { useState } from 'react';
 import {
   Modal, View, Text, StyleSheet, TouchableOpacity, ScrollView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Rect, Line, Circle, Path } from 'react-native-svg';
 import { DANCE_COLORS } from '../../shared/dance-colors';
 
@@ -30,8 +31,11 @@ function TorusFrame({ children }: { children?: React.ReactNode }) {
           <Line x1={PAD} y1={p} x2={BOX - PAD} y2={p} stroke="#1a1a2e" strokeWidth={0.5} />
         </React.Fragment>
       ))}
+      {/* Identity diagonal RR(n) = RR(n+1). Both axes run from the top-left
+          like the live TorusDisplay, so the line runs top-left → bottom-right;
+          it used to run the other way and the Waltz dots crossed it. */}
       <Line
-        x1={PAD} y1={BOX - PAD} x2={BOX - PAD} y2={PAD}
+        x1={PAD} y1={PAD} x2={BOX - PAD} y2={BOX - PAD}
         stroke="#1a1a2e" strokeWidth={1} strokeDasharray="4,4"
       />
       {children}
@@ -50,7 +54,7 @@ function TorusFrame({ children }: { children?: React.ReactNode }) {
 const fx = (f: number) => PAD + f * INNER;
 const fy = (f: number) => PAD + f * INNER;
 
-function dots(coords: Array<[number, number]>, color: string, r = 4) {
+function dots(coords: [number, number][], color: string, r = 4) {
   return coords.map(([x, y], i) => (
     <Circle key={i} cx={fx(x)} cy={fy(y)} r={r} fill={color} fillOpacity={0.85} />
   ));
@@ -72,7 +76,6 @@ function SlidePeaks() {
         />
       ))}
       {peaks.slice(1).map((x, i) => {
-        const mid = (peaks[i] + x) / 2;
         return (
           <React.Fragment key={i}>
             <Line x1={peaks[i]} y1={baseY + 14} x2={x} y2={baseY + 14} stroke="#f59e0b" strokeWidth={1.5} />
@@ -87,7 +90,7 @@ function SlidePeaks() {
 
 // Slide 2: a loose diagonal cluster — the Waltz.
 function SlideMap() {
-  const pts: Array<[number, number]> = [
+  const pts: [number, number][] = [
     [0.35, 0.38], [0.45, 0.42], [0.52, 0.55], [0.6, 0.58],
     [0.55, 0.66], [0.48, 0.6], [0.42, 0.5], [0.38, 0.45],
   ];
@@ -96,7 +99,7 @@ function SlideMap() {
 
 // Slide 4: baseline region + one outlier.
 function SlideChange() {
-  const cluster: Array<[number, number]> = [
+  const cluster: [number, number][] = [
     [0.4, 0.42], [0.46, 0.45], [0.5, 0.5], [0.44, 0.52], [0.52, 0.44], [0.48, 0.48],
   ];
   return (
@@ -110,15 +113,15 @@ function SlideChange() {
 }
 
 // Slide 3: three mini-shapes.
-function MiniTorus({ pts, color }: { pts: Array<[number, number]>; color: string }) {
+function MiniTorus({ pts, color }: { pts: [number, number][]; color: string }) {
   const S = 92, p = 8, inner = S - 2 * p;
   const mx = (f: number) => p + f * inner;
-  const my = (f: number) => p + (1 - f) * inner;
+  const my = (f: number) => p + f * inner;
   return (
     <Svg width={S} height={S} viewBox={`0 0 ${S} ${S}`}>
       <Rect x={0} y={0} width={S} height={S} fill="#0a0a0f" rx={6} />
       <Rect x={p} y={p} width={inner} height={inner} fill="none" stroke="#1a1a2e" strokeWidth={0.5} />
-      <Line x1={p} y1={S - p} x2={S - p} y2={p} stroke="#1a1a2e" strokeWidth={0.5} strokeDasharray="3,3" />
+      <Line x1={p} y1={p} x2={S - p} y2={S - p} stroke="#1a1a2e" strokeWidth={0.5} strokeDasharray="3,3" />
       {pts.map(([x, y], i) => (
         <Circle key={i} cx={mx(x)} cy={my(y)} r={2.5} fill={color} fillOpacity={0.85} />
       ))}
@@ -127,13 +130,13 @@ function MiniTorus({ pts, color }: { pts: Array<[number, number]>; color: string
 }
 
 function SlideShapes() {
-  const lockStep: Array<[number, number]> = [
+  const lockStep: [number, number][] = [
     [0.48, 0.5], [0.5, 0.52], [0.52, 0.49], [0.49, 0.48], [0.51, 0.51], [0.5, 0.5],
   ];
-  const waltz: Array<[number, number]> = [
+  const waltz: [number, number][] = [
     [0.3, 0.35], [0.42, 0.45], [0.55, 0.58], [0.62, 0.66], [0.5, 0.55], [0.38, 0.42],
   ];
-  const mosh: Array<[number, number]> = [
+  const mosh: [number, number][] = [
     [0.2, 0.7], [0.75, 0.3], [0.5, 0.85], [0.85, 0.6], [0.3, 0.25], [0.6, 0.5], [0.15, 0.4],
   ];
   return (
@@ -212,7 +215,7 @@ export function Onboarding({ visible, onDone }: Props) {
 
   return (
     <Modal visible={visible} animationType="fade" transparent={false} onRequestClose={skip}>
-      <View style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
         <View style={styles.topBar}>
           <Text style={styles.brand}>Cardiac Dance Monitor</Text>
           {!isLast && (
@@ -245,7 +248,7 @@ export function Onboarding({ visible, onDone }: Props) {
             never clinical diagnoses.
           </Text>
         )}
-      </View>
+      </SafeAreaView>
     </Modal>
   );
 }
@@ -254,9 +257,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#05050a',
-    paddingTop: 48,
+    paddingTop: 16,
     paddingHorizontal: 24,
-    paddingBottom: 24,
+    paddingBottom: 16,
   },
   topBar: {
     flexDirection: 'row',
@@ -327,7 +330,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   disclaimer: {
-    color: '#475569',
+    color: '#64748b',
     fontSize: 11,
     lineHeight: 15,
     textAlign: 'center',
@@ -347,7 +350,7 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   shapeSub: {
-    color: '#475569',
+    color: '#64748b',
     fontSize: 10,
     marginTop: 1,
   },

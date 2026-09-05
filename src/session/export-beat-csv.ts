@@ -36,7 +36,7 @@ export async function exportBeatCSV(): Promise<void> {
       });
       return;
     }
-  } catch (_e) {
+  } catch {
     // expo modules not available — fall through to clipboard
   }
 
@@ -48,7 +48,7 @@ export async function exportBeatCSV(): Promise<void> {
       Alert.alert('CSV Copied', `${beatLogger.count} beats copied to clipboard as CSV.`);
       return;
     }
-  } catch (_e) {
+  } catch {
     // RN Clipboard not available
   }
 

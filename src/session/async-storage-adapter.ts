@@ -5,11 +5,12 @@
  * crashes in environments without the native module (Jest, node). In that
  * case it degrades to in-memory storage — same behavior as MemoryStorage.
  */
-import type { StorageAdapter } from './session-store';
+import { StorageReadError, type StorageAdapter } from './session-store';
 
 interface AsyncStorageLike {
   getItem(key: string): Promise<string | null>;
   setItem(key: string, value: string): Promise<void>;
+  removeItem?(key: string): Promise<void>;
 }
 
 function loadAsyncStorage(): AsyncStorageLike | null {
@@ -36,8 +37,12 @@ export class AsyncStorageAdapter implements StorageAdapter {
     if (this.native && !this.failedKeys.has(key)) {
       try {
         return await this.native.getItem(key);
-      } catch {
-        // fall through to in-memory
+      } catch (e: any) {
+        // A native READ failure (e.g. a row larger than Android's 2 MB
+        // cursor window) used to fall through to the in-memory copy, which
+        // is empty on a fresh launch — so the caller saw "nothing stored"
+        // and its next write replaced everything. Surface it instead.
+        throw new StorageReadError(key, e?.message ?? String(e));
       }
     }
     return this.fallback[key] ?? null;
@@ -61,6 +66,19 @@ export class AsyncStorageAdapter implements StorageAdapter {
     }
   }
 
+  async removeItem(key: string): Promise<void> {
+    delete this.fallback[key];
+    this.failedKeys.delete(key);
+    if (this.native) {
+      try {
+        if (this.native.removeItem) await this.native.removeItem(key);
+        else await this.native.setItem(key, '');
+      } catch (e: any) {
+        console.warn('STORAGE_REMOVE_FAILED:', key, e?.message ?? e);
+      }
+    }
+  }
+
   /** True if any write has failed — persistence is degraded to this session. */
   hasFailedWrites(): boolean {
     return this.failedKeys.size > 0;
@@ -75,7 +93,7 @@ export class AsyncStorageAdapter implements StorageAdapter {
 /** Thrown when a native write fails so callers can surface it to the user. */
 export class StorageQuotaError extends Error {
   constructor(public readonly key: string, reason: string) {
-    super(`Could not save to device storage (${key}): ${reason}`);
+    super(`Could not save to app storage (${key}): ${reason}`);
     this.name = 'StorageQuotaError';
   }
 }

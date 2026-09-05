@@ -12,11 +12,12 @@
  */
 import React, { useEffect, useRef, useCallback, useState } from 'react';
 import {
-  View, Text, StyleSheet, SafeAreaView, ScrollView, useWindowDimensions,
+  View, Text, StyleSheet, ScrollView, useWindowDimensions,
   TouchableOpacity, AppState, Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from 'expo-router';
 import Svg, { Polyline } from 'react-native-svg';
-import { exportBeatCSV } from '../../src/session/export-beat-csv';
 import {
   startChestAccel, stopChestAccel, clearAccelBuffer,
   getAccelBuffer, isAccelAvailable, detectMotionArtifact,
@@ -29,7 +30,7 @@ import { useCameraPPG } from '../../src/hooks/use-camera-ppg';
 import { useInnovoPulseOx } from '../../src/ble/use-innovo-pulse-ox';
 import { useMonitorPipeline } from '../../src/hooks/use-monitor-pipeline';
 import { useSessionRecorder } from '../../src/hooks/use-session-recorder';
-import { useDataSource } from '../../src/context/data-source-context';
+import { useDataSource, baselineNamespaceFor } from '../../src/context/data-source-context';
 import { SignalQualityBadge } from '../../src/display/SignalQualityBadge';
 import { BPMDisplay } from '../../src/display/BPMDisplay';
 import { SpO2Display } from '../../src/display/SpO2Display';
@@ -43,20 +44,27 @@ import { Onboarding } from '../../src/display/Onboarding';
 import { useOnboarding } from '../../src/hooks/use-onboarding';
 import { BaselineIndicator } from '../../src/display/BaselineIndicator';
 import { SIGNAL_GAP_MS } from '../../shared/constants';
+import { debugLog } from '../../shared/debug';
 import { AlertService, type AlertEvent } from '../../src/alerts/alert-service';
 import { sessionStore } from '../../src/session/session-store-instance';
 import { appStorage } from '../../src/session/async-storage-adapter';
 import { beatLogger } from '../../src/session/beat-logger';
+import type { Session } from '../../src/session/session-types';
 
 // NO top-level camera import. CameraPPGView is loaded via conditional
 // require() inside the component, only when sourceType === 'camera'.
-// This ensures VisionCamera module-level crashes never affect BLE or
-// simulated modes.
+// This ensures VisionCamera crashes never affect BLE or simulated modes.
+
+/** Sessions shorter than this are not worth a History row. */
+const MIN_SESSION_BEATS = 10;
 
 export default function MonitorScreen() {
   const { width } = useWindowDimensions();
   const torusSize = Math.min(width - 32, 300);
-  const { sourceType, simulatedScenario, baselineResetCounter, forceBaselineCounter, ppgValidationMode, replayOnboardingCounter, filterSensitivity } = useDataSource();
+  const {
+    sourceType, simulatedScenario, baselineResetCounter, forceBaselineCounter,
+    ppgValidationMode, replayOnboardingCounter, filterSensitivity, devMode,
+  } = useDataSource();
   const { seen: onboardingSeen, markSeen: markOnboardingSeen } = useOnboarding();
   const [replayOnboarding, setReplayOnboarding] = useState(false);
   const simulated = useSimulatedPulseOx(simulatedScenario, false); // no auto-start
@@ -65,16 +73,20 @@ export default function MonitorScreen() {
 
   // Select active source based on sourceType
   const pulseOx = sourceType === 'camera' ? camera
-    : sourceType === 'ble_innovo' || sourceType === 'ble' ? ble
+    : sourceType === 'ble_innovo' ? ble
     : simulated;
 
+  // processFrame is a stable callback, so this identity is stable too and the
+  // camera's native frame processor is installed once, not once per render.
+  const cameraProcessFrame = camera.processFrame;
   const handleCameraFrame = useCallback((redMean: number, timestampMs: number) => {
-    camera.processFrame(redMean, timestampMs);
-  }, [camera]);
+    cameraProcessFrame(redMean, timestampMs);
+  }, [cameraProcessFrame]);
+
   const {
     state, processPPI, reset, resetBaseline, forceEstablishBaseline, getBaselineService,
     flushBaselineProgress,
-  } = useMonitorPipeline(appStorage);
+  } = useMonitorPipeline(appStorage, baselineNamespaceFor(sourceType));
 
   // The baseline's true recording time. Passing Date.now() here made the
   // indicator always read "0m ago", even for a baseline restored from storage
@@ -83,7 +95,7 @@ export default function MonitorScreen() {
     ? getBaselineService().getBaseline()?.recordedAt ?? null
     : null;
   const {
-    recState, startSession, recordBeat, recordChangeEvent, endSession,
+    recState, startSession, recordBeat, recordChangeEvent, snapshotSession, endSession,
   } = useSessionRecorder();
 
   // AlertService and its 30-minute suppression were fully implemented and
@@ -92,6 +104,12 @@ export default function MonitorScreen() {
   const alertService = useRef(new AlertService());
   const [activeAlert, setActiveAlert] = useState<AlertEvent | null>(null);
   const prevChangeLevel = useRef(state.changeLevel);
+  // The dance seen while the rhythm was still at baseline — the "before" of a
+  // change event. Both sides were previously logged as the current dance
+  // ("The Mosh Pit to The Mosh Pit").
+  const stableDanceRef = useRef<string | null>(null);
+  const isLearningRef = useRef(state.isLearningBaseline);
+  isLearningRef.current = state.isLearningBaseline;
 
   const sessionStarted = useRef(false);
   const prevResetCounter = useRef(baselineResetCounter);
@@ -113,19 +131,35 @@ export default function MonitorScreen() {
     return () => clearInterval(id);
   }, []);
 
-  // Chest mode state
+  // Chest mode state (Developer mode only — a research control)
   const [chestMode, setChestMode] = useState(false);
   const [showChestOverlay, setShowChestOverlay] = useState(false);
   const [breathRate, setBreathRate] = useState<number | null>(null);
   const [breathWaveform, setBreathWaveform] = useState<{ timestamp: number; value: number }[]>([]);
   const breathUpdateRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const chestOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopChest = useCallback(() => {
+    stopChestAccel();
+    setChestMode(false);
+    setShowChestOverlay(false);
+    setBreathRate(null);
+    setBreathWaveform([]);
+    if (breathUpdateRef.current) {
+      clearInterval(breathUpdateRef.current);
+      breathUpdateRef.current = null;
+    }
+    if (chestOverlayTimerRef.current) {
+      clearTimeout(chestOverlayTimerRef.current);
+      chestOverlayTimerRef.current = null;
+    }
+  }, []);
 
   // Chest mode toggle handler
   const toggleChestMode = useCallback(() => {
     if (!chestMode) {
       if (!isAccelAvailable()) {
-        const { Alert } = require('react-native');
-        Alert.alert('Chest Mode Unavailable', 'Requires dev build with expo-sensors.');
+        Alert.alert('Chest Mode Unavailable', 'The accelerometer is not available on this device.');
         return;
       }
       const started = startChestAccel();
@@ -133,7 +167,7 @@ export default function MonitorScreen() {
         setChestMode(true);
         setShowChestOverlay(true);
         // Auto-dismiss overlay after 5 seconds
-        setTimeout(() => setShowChestOverlay(false), 5000);
+        chestOverlayTimerRef.current = setTimeout(() => setShowChestOverlay(false), 5000);
         // Update breath rate and waveform every 2 seconds
         breathUpdateRef.current = setInterval(() => {
           const buf = getAccelBuffer();
@@ -142,24 +176,21 @@ export default function MonitorScreen() {
         }, 2000);
       }
     } else {
-      stopChestAccel();
-      setChestMode(false);
-      setBreathRate(null);
-      setBreathWaveform([]);
-      if (breathUpdateRef.current) {
-        clearInterval(breathUpdateRef.current);
-        breathUpdateRef.current = null;
-      }
+      stopChest();
     }
-  }, [chestMode]);
+  }, [chestMode, stopChest]);
 
-  // Cleanup chest mode on unmount
+  // Cleanup chest mode on unmount, and when Developer mode is switched off
   useEffect(() => {
-    return () => {
-      if (breathUpdateRef.current) clearInterval(breathUpdateRef.current);
-      stopChestAccel();
-    };
-  }, []);
+    if (!devMode && chestMode) stopChest();
+  }, [devMode, chestMode, stopChest]);
+  useEffect(() => () => stopChest(), [stopChest]);
+
+  // Show the intro on first launch (once storage resolves) or on replay. The
+  // source does not connect until the intro is dismissed — otherwise the
+  // simulator was already 40 beats into a session behind the slides.
+  const showOnboarding = replayOnboarding || onboardingSeen === false;
+  const sourceReady = onboardingSeen !== null && !showOnboarding;
 
   // Changing the simulated rhythm must clear the pipeline too. The simulator
   // restarts in ~50ms — well under SIGNAL_GAP_MS — so the watchdog does not
@@ -172,19 +203,50 @@ export default function MonitorScreen() {
     if (sourceType !== 'simulated') return;
     lastBeatAtRef.current = null;
     setSignalStale(false);
-    reset();
+    // Keep the rate-vs-geometry history: the strip's whole point is showing
+    // "before" and "after" a rhythm change side by side.
+    reset({ keepHistory: true });
     beatLogger.clear();
-  }, [simulatedScenario, sourceType, reset]);
+    // A scenario switch is a new experiment: clear the previous banner and
+    // the 30-minute suppression so the next alert can actually show — but
+    // keep the level history so switching back to the baseline rhythm still
+    // produces the "returned to baseline" banner.
+    setActiveAlert(null);
+    alertService.current.clearSuppression();
+    // While the baseline is still LEARNING, every scenario played so far has
+    // been feeding it (and that progress is persisted). A rehearsed Mosh Pit
+    // made the baseline so wide that the real Mosh Pit never registered as a
+    // change. Start learning over on the new rhythm.
+    if (isLearningRef.current) void resetBaseline();
+  }, [simulatedScenario, sourceType, reset, resetBaseline]);
 
   // Connect/disconnect all sources when sourceType changes + reset pipeline
   const prevSourceType = useRef(sourceType);
   useEffect(() => {
-    console.log('SOURCE_ACTIVE:', sourceType);
+    debugLog('SOURCE_ACTIVE:', sourceType, 'ready=', sourceReady);
 
     // Disconnect all sources first
     simulated.disconnect();
     camera.disconnect();
     ble.disconnect();
+
+    // Reset pipeline when source actually changes (not on first mount). The
+    // baseline is NOT reset: simulated and sensor baselines live in separate
+    // namespaces and the pipeline hook switches between them.
+    if (prevSourceType.current !== sourceType) {
+      prevSourceType.current = sourceType;
+      lastBeatAtRef.current = null;
+      setSignalStale(false);
+      reset();
+      beatLogger.clear();
+      clearAccelBuffer();
+      setActiveAlert(null);
+      alertService.current.reset();
+      // End current session so old data doesn't mix
+      void flushSession();
+    }
+
+    if (!sourceReady) return;
 
     // Connect the selected source. In PPG validation mode, BLE and camera
     // both run so their rolling BPM can be compared live.
@@ -194,23 +256,17 @@ export default function MonitorScreen() {
     if (sourceType === 'camera' || ppgValidationMode) {
       camera.connect('camera');
     }
-    if (sourceType === 'ble_innovo' || sourceType === 'ble' || ppgValidationMode) {
+    if (sourceType === 'ble_innovo' || ppgValidationMode) {
       ble.connect();
     }
+  }, [sourceType, ppgValidationMode, sourceReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Reset pipeline when source actually changes (not on first mount)
-    if (prevSourceType.current !== sourceType) {
-      prevSourceType.current = sourceType;
-      lastBeatAtRef.current = null;
-      setSignalStale(false);
-      reset();
-      resetBaseline();
-      beatLogger.clear();
-      clearAccelBuffer();
-      // End current session so old data doesn't mix
-      void flushSession();
+  // Remember the dance the rhythm held while at baseline, for change events.
+  useEffect(() => {
+    if (state.danceMatch && (state.changeLevel === 'normal' || state.changeLevel === 'learning')) {
+      stableDanceRef.current = state.danceMatch.name;
     }
-  }, [sourceType, ppgValidationMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [state.danceMatch, state.changeLevel]);
 
   // Drive alerts + session change-event log from the pipeline's change level.
   useEffect(() => {
@@ -219,16 +275,24 @@ export default function MonitorScreen() {
     if (level === prev) return;
     prevChangeLevel.current = level;
 
+    // 'learning' with an established baseline is the geometry warming up
+    // after a reset, not a verdict. Feeding it to the alert service made it
+    // forget it had alerted, so the recovery banner never showed.
+    if (level === 'learning' && !state.isLearningBaseline) return;
+
     const danceName = state.danceMatch?.name ?? 'Unknown';
     if (level === 'notice' || level === 'alert') {
-      recordChangeEvent(level, state.changeStatus.mahalanobisDistance, danceName, danceName);
+      recordChangeEvent(
+        level, state.changeStatus.mahalanobisDistance,
+        stableDanceRef.current ?? danceName, danceName,
+      );
     }
 
     const events = alertService.current.processLevelChange(
       level, state.changeStatus.mahalanobisDistance, danceName,
     );
     for (const ev of events) {
-      console.log('ALERT_EVENT:', ev.type, ev.message);
+      debugLog('ALERT_EVENT:', ev.type, ev.message);
       setActiveAlert(ev);
       if (ev.type === 'alert') {
         // Three pulses, per SPEC 5.1. Haptics is optional at runtime.
@@ -245,13 +309,15 @@ export default function MonitorScreen() {
         }
       }
     }
-  }, [state.changeLevel, state.changeStatus.mahalanobisDistance, state.danceMatch, recordChangeEvent]);
+  }, [state.changeLevel, state.changeStatus.mahalanobisDistance, state.danceMatch, state.isLearningBaseline, recordChangeEvent]);
 
   // Watch for baseline reset requests from Settings
   useEffect(() => {
     if (baselineResetCounter > prevResetCounter.current) {
       prevResetCounter.current = baselineResetCounter;
-      resetBaseline();
+      setActiveAlert(null);
+      alertService.current.reset();
+      void resetBaseline();
     }
   }, [baselineResetCounter, resetBaseline]);
 
@@ -264,13 +330,30 @@ export default function MonitorScreen() {
     }
   }, [replayOnboardingCounter]);
 
-  // Watch for force-establish baseline requests from Settings (dev/demo)
+  // Watch for force-establish baseline requests from Settings (dev/demo).
+  // The outcome is reported here, not assumed in Settings: the request used
+  // to be answered with a success dialog before anything had happened, while
+  // the actual "not enough data" went to the console.
   const prevForceCounter = useRef(forceBaselineCounter);
   useEffect(() => {
     if (forceBaselineCounter > prevForceCounter.current) {
       prevForceCounter.current = forceBaselineCounter;
-      const ok = forceEstablishBaseline();
-      console.log('BASELINE_FORCE_ESTABLISH:', ok ? 'established' : 'not enough data');
+      const r = forceEstablishBaseline();
+      if (r.established) {
+        setActiveAlert(null);
+        alertService.current.reset();
+        Alert.alert(
+          'Baseline established',
+          `Frozen from ${r.rawBeats} beats (${r.featureSamples} rhythm windows). ` +
+          'Change detection is active — switch the scenario on the Settings tab to watch it react.',
+        );
+      } else {
+        Alert.alert(
+          'Not enough data yet',
+          `${r.rawBeats} of ${r.requiredBeats} beats and ${r.featureSamples} of ${r.requiredSamples} ` +
+          'rhythm windows so far. Keep the Monitor running (about 3 minutes at 75 BPM) and try again.',
+        );
+      }
     }
   }, [forceBaselineCounter, forceEstablishBaseline]);
 
@@ -300,7 +383,6 @@ export default function MonitorScreen() {
       // Build per-beat raw data for research export
       const rawSource = sourceType === 'ble_innovo' ? 'ble_ppg' as const
         : sourceType === 'camera' ? 'camera' as const
-        : sourceType === 'ble' ? 'ble_hr' as const
         : 'simulated' as const;
       const rawBeat = {
         timestamp_ms: now,
@@ -344,6 +426,21 @@ export default function MonitorScreen() {
     }
   }, [latestBeat, pulseOx.latestPPI]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const persistSession = useCallback(async (session: Session, final: boolean) => {
+    if (session.beatCount < MIN_SESSION_BEATS) return;
+    try {
+      await sessionStore.saveSession(session);
+    } catch (e: any) {
+      console.warn('SESSION_SAVE_FAILED:', e?.message ?? e);
+      if (final) {
+        Alert.alert(
+          'Could not save session',
+          'The app\'s storage is full or unreadable. Delete old sessions from History, then record again.',
+        );
+      }
+    }
+  }, []);
+
   /**
    * Persist the in-progress session, if any. Safe to call repeatedly:
    * endSession() nulls its own state and returns null on a second call.
@@ -355,18 +452,25 @@ export default function MonitorScreen() {
     if (!sessionStarted.current) return;
     const session = endSession();
     sessionStarted.current = false;
-    if (session && session.beatCount > 0) {
-      try {
-        await sessionStore.saveSession(session);
-      } catch (e: any) {
-        console.warn('SESSION_SAVE_FAILED:', e?.message ?? e);
-        Alert.alert(
-          'Could not save session',
-          'Device storage is full. Free space or delete old sessions from History, then record again.',
-        );
-      }
-    }
-  }, [endSession, flushBaselineProgress]);
+    if (session) await persistSession(session, true);
+  }, [endSession, flushBaselineProgress, persistSession]);
+
+  /**
+   * Checkpoint the in-progress session WITHOUT ending it. Leaving the Monitor
+   * tab used to leave History empty ("No sessions recorded yet") while the
+   * Monitor said "Recording • 400 beats", because nothing was written until
+   * the app was backgrounded. The same id is upserted, so the row simply
+   * grows while the recording continues.
+   */
+  const checkpointSession = useCallback(async () => {
+    void flushBaselineProgress();
+    const snapshot = snapshotSession();
+    if (snapshot) await persistSession(snapshot, false);
+  }, [snapshotSession, flushBaselineProgress, persistSession]);
+
+  useFocusEffect(useCallback(() => {
+    return () => { void checkpointSession(); };
+  }, [checkpointSession]));
 
   // Save on unmount and when the app leaves the foreground. Without this a
   // long recording that never hit a source change or a 5-minute disconnect
@@ -430,11 +534,30 @@ export default function MonitorScreen() {
     }).join(' ');
   };
 
-  // Show the intro on first launch (once storage resolves) or on replay.
-  const showOnboarding = replayOnboarding || onboardingSeen === false;
+  // Header connection text. When a sensor source is idle it explains why and
+  // offers a retry — the only way to retry used to be switching source.
+  const status = pulseOx.connectionStatus;
+  const canRetry = status === 'disconnected' && sourceType !== 'simulated' && sourceReady;
+  const connectionText = status === 'connected'
+    ? pulseOx.sourceName
+    : status === 'scanning'
+      ? 'Scanning for sensor...'
+      : status === 'reconnecting'
+        ? 'Reconnecting...'
+        : status === 'connecting'
+          ? (sourceType === 'camera' ? 'Starting camera...' : 'Connecting...')
+          : canRetry
+            ? 'Disconnected — tap to try again'
+            : 'Disconnected';
+
+  const badgeQuality = status === 'disconnected'
+    ? 'disconnected'
+    : signalStale ? 'poor' : pulseOx.signalQuality;
+
+  const dimmed = signalStale || status === 'reconnecting';
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <Onboarding
         visible={showOnboarding}
         onDone={() => {
@@ -452,29 +575,38 @@ export default function MonitorScreen() {
 
         {/* Header: connection + signal quality */}
         <View style={styles.header}>
-          <Text style={styles.connectionText}>
-            {pulseOx.connectionStatus === 'connected'
-              ? pulseOx.sourceName
-              : pulseOx.connectionStatus === 'scanning'
-                ? 'Scanning for sensor...'
-                : pulseOx.connectionStatus === 'reconnecting'
-                  ? 'Reconnecting...'
-                  : pulseOx.connectionStatus === 'connecting'
-                    ? 'Connecting...'
-                    : 'Disconnected'}
-          </Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <TouchableOpacity
-              style={[styles.chestToggle, chestMode && styles.chestToggleActive]}
-              onPress={toggleChestMode}
-            >
-              <Text style={[styles.chestToggleText, chestMode && styles.chestToggleTextActive]}>
-                Chest
-              </Text>
-            </TouchableOpacity>
-            <SignalQualityBadge quality={signalStale ? 'poor' : pulseOx.signalQuality} />
+          <TouchableOpacity
+            disabled={!canRetry}
+            onPress={() => pulseOx.connect()}
+            hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+            style={styles.connectionTouch}
+          >
+            <Text style={[styles.connectionText, canRetry && styles.connectionRetry]} numberOfLines={1}>
+              {connectionText}
+            </Text>
+          </TouchableOpacity>
+          <View style={styles.headerRight}>
+            {devMode && (
+              <TouchableOpacity
+                style={[styles.chestToggle, chestMode && styles.chestToggleActive]}
+                onPress={toggleChestMode}
+                hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+              >
+                <Text style={[styles.chestToggleText, chestMode && styles.chestToggleTextActive]}>
+                  Chest
+                </Text>
+              </TouchableOpacity>
+            )}
+            <SignalQualityBadge quality={badgeQuality} />
           </View>
         </View>
+
+        {/* Why the sensor is idle, in plain words */}
+        {status === 'disconnected' && pulseOx.statusMessage && (
+          <TouchableOpacity style={styles.statusBanner} onPress={() => pulseOx.connect()} activeOpacity={0.85}>
+            <Text style={styles.statusBannerText}>{pulseOx.statusMessage}</Text>
+          </TouchableOpacity>
+        )}
 
         {/* Change alert banner — dismissible, never diagnostic */}
         {activeAlert && (
@@ -492,12 +624,12 @@ export default function MonitorScreen() {
         )}
 
         {/* Signal continuity banner — stale data must never look live */}
-        {(signalStale || pulseOx.connectionStatus === 'reconnecting') && (
+        {(signalStale || status === 'reconnecting') && (
           <View style={styles.signalBanner}>
             <Text style={styles.signalBannerText}>
-              {pulseOx.connectionStatus === 'reconnecting'
+              {status === 'reconnecting'
                 ? 'Sensor connection lost — reconnecting...'
-                : pulseOx.connectionStatus === 'disconnected'
+                : status === 'disconnected'
                   ? 'Sensor disconnected — reading below is not live'
                   : 'Signal lost — check sensor contact'}
             </Text>
@@ -523,13 +655,13 @@ export default function MonitorScreen() {
              CameraPPGView itself wraps CameraPPGNative in a try-catch,
              so even if VisionCamera crashes on require(), we get a
              graceful fallback instead of a dead monitor screen. */}
-        {(sourceType === 'camera' || ppgValidationMode) && (() => {
+        {(sourceType === 'camera' || ppgValidationMode) && sourceReady && (() => {
           try {
             const CameraView = require('../../src/display/CameraPPGView').default;
             return (
               <CameraView
                 onFrame={handleCameraFrame}
-                active={camera.connectionStatus === 'connected'}
+                active={camera.connectionStatus === 'connected' || camera.connectionStatus === 'connecting'}
                 ppgState={camera.ppgState}
                 peakCount={camera.peakCount}
               />
@@ -537,11 +669,8 @@ export default function MonitorScreen() {
           } catch (e: any) {
             console.warn('CAMERA_REQUIRE_FAILED:', e?.message);
             return (
-              <View style={{
-                height: 120, borderRadius: 12, backgroundColor: '#0a0a1a',
-                marginBottom: 12, justifyContent: 'center', alignItems: 'center',
-              }}>
-                <Text style={{ color: '#94a3b8', fontSize: 14 }}>
+              <View style={styles.cameraFallback}>
+                <Text style={styles.cameraFallbackText}>
                   Camera unavailable
                 </Text>
               </View>
@@ -572,7 +701,7 @@ export default function MonitorScreen() {
 
         {/* Torus display — dimmed while the signal is stale so the last
              reading is visibly not live */}
-        <View style={{ opacity: signalStale || pulseOx.connectionStatus === 'reconnecting' ? 0.35 : 1 }}>
+        <View style={{ opacity: dimmed ? 0.35 : 1 }}>
           <TorusDisplay
             points={state.displayPoints}
             danceName={danceName}
@@ -582,7 +711,7 @@ export default function MonitorScreen() {
         </View>
 
         {/* Rate vs geometry comparison — the "same BPM, different dance" story */}
-        {state.isDancing && (
+        {(state.isDancing || state.featureHistory.length >= 2) && (
           <ComparisonStrip history={state.featureHistory} width={torusSize} />
         )}
 
@@ -607,20 +736,12 @@ export default function MonitorScreen() {
           </View>
         )}
 
-        {/* Export CSV button */}
-        {state.totalBeats > 0 && (
-          <TouchableOpacity style={styles.exportButton} onPress={exportBeatCSV}>
-            <Text style={styles.exportButtonText}>
-              Export CSV ({beatLogger.count} beats)
-            </Text>
-          </TouchableOpacity>
-        )}
-
         {/* Baseline indicator */}
         <BaselineIndicator
           isLearning={state.isLearningBaseline}
           progress={state.baselineLearningProgress}
           sampleCount={state.baselineBeatCount}
+          observedMs={state.baselineObservedMs}
           baselineRecordedAt={baselineRecordedAt}
           baselineBeatCount={!state.isLearningBaseline ? state.baselineBeatCount : null}
         />
@@ -630,6 +751,7 @@ export default function MonitorScreen() {
           isDancing={state.isDancing}
           currentDance={state.danceMatch}
           changeLevel={state.changeLevel}
+          isLearningBaseline={state.isLearningBaseline}
         />
 
         {/* Metrics row */}
@@ -637,7 +759,7 @@ export default function MonitorScreen() {
           bpm={state.bpm ?? 0}
           kappa={state.kappaMedian}
           gini={state.gini}
-          sigma={state.changeStatus.mahalanobisDistance > 0 ? state.changeStatus.mahalanobisDistance : null}
+          distance={state.changeStatus.level !== 'learning' ? state.changeStatus.mahalanobisDistance : null}
         />
 
         {/* Session info */}
@@ -684,10 +806,38 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 8,
+    gap: 8,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  connectionTouch: {
+    flexShrink: 1,
+    minHeight: 32,
+    justifyContent: 'center',
   },
   connectionText: {
     color: '#64748b',
     fontSize: 12,
+  },
+  connectionRetry: {
+    color: '#60a5fa',
+    textDecorationLine: 'underline',
+  },
+  statusBanner: {
+    backgroundColor: '#12203a',
+    borderLeftWidth: 3,
+    borderLeftColor: '#60a5fa',
+    borderRadius: 6,
+    padding: 10,
+    marginBottom: 12,
+  },
+  statusBannerText: {
+    color: '#cbd5e1',
+    fontSize: 13,
+    lineHeight: 18,
   },
   signalBanner: {
     backgroundColor: '#2d1a1a',
@@ -724,9 +874,9 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   chestToggle: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#334155',
   },
@@ -760,6 +910,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 12,
   },
+  cameraFallback: {
+    height: 120,
+    borderRadius: 12,
+    backgroundColor: '#0a0a1a',
+    marginBottom: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cameraFallbackText: {
+    color: '#94a3b8',
+    fontSize: 14,
+  },
   breathSection: {
     alignItems: 'center',
     marginBottom: 8,
@@ -773,25 +935,12 @@ const styles = StyleSheet.create({
   breathWaveContainer: {
     alignItems: 'center',
   },
-  exportButton: {
-    alignSelf: 'center',
-    backgroundColor: '#1e293b',
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    marginBottom: 12,
-  },
-  exportButtonText: {
-    color: '#94a3b8',
-    fontSize: 12,
-    fontFamily: 'monospace',
-  },
   sessionInfo: {
     alignItems: 'center',
     paddingVertical: 8,
   },
   sessionText: {
-    color: '#475569',
+    color: '#64748b',
     fontSize: 12,
     fontFamily: 'monospace',
   },

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars -- research screen; helpers kept for the validation study */
 /**
  * PPG Equivalence Test screen — hidden dev tool.
  *
