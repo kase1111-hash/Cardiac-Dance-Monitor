@@ -11,7 +11,6 @@ describe('PeakDetector', () => {
     const sampleRate = 30;
     const freq = 1.0; // 1 Hz = 60 BPM
 
-    const ppis: number[] = [];
     detector.onPeak = (timestampMs) => {
       // We'll collect timestamps and compute intervals
     };

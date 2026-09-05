@@ -1,12 +1,23 @@
 /**
- * Data source context — manages whether the app uses simulated or BLE data.
- * Provides a dev toggle for settings screen.
+ * Data source context — which source feeds the monitor (simulated, Innovo
+ * BLE oximeter, or camera PPG), the simulated scenario, and the handful of
+ * cross-tab requests Settings sends to the Monitor screen.
  */
 import React, { createContext, useContext, useState, useMemo, type ReactNode } from 'react';
 import type { RhythmScenario } from '../../shared/simulator';
 import { PPI_DEVIATION_MAX } from '../../shared/constants';
 
-type DataSourceType = 'simulated' | 'ble' | 'ble_innovo' | 'camera';
+/**
+ * 'ble' (a generic Heart Rate Service strap) was offered in Settings but
+ * routed to the Innovo-only hook, so it scanned for 30 s and silently gave
+ * up. Only sources that actually work are listed.
+ */
+export type DataSourceType = 'simulated' | 'ble_innovo' | 'camera';
+
+/** Baseline namespace for a source: simulated rhythms vs. a real person. */
+export function baselineNamespaceFor(source: DataSourceType): 'simulated' | 'sensor' {
+  return source === 'simulated' ? 'simulated' : 'sensor';
+}
 
 interface DataSourceContextValue {
   sourceType: DataSourceType;
@@ -32,6 +43,9 @@ interface DataSourceContextValue {
   /** Incremented when user asks to replay the intro from Settings */
   replayOnboardingCounter: number;
   requestReplayOnboarding: () => void;
+  /** Developer section revealed (long-press About); gates research controls. */
+  devMode: boolean;
+  setDevMode: (on: boolean) => void;
 }
 
 const DataSourceContext = createContext<DataSourceContextValue>({
@@ -49,6 +63,8 @@ const DataSourceContext = createContext<DataSourceContextValue>({
   setPPGValidationMode: () => {},
   replayOnboardingCounter: 0,
   requestReplayOnboarding: () => {},
+  devMode: false,
+  setDevMode: () => {},
 });
 
 export function DataSourceProvider({ children }: { children: ReactNode }) {
@@ -62,49 +78,31 @@ export function DataSourceProvider({ children }: { children: ReactNode }) {
   const [forceBaselineCounter, setForceBaselineCounter] = useState(0);
   const [ppgValidationMode, setPPGValidationMode] = useState(false);
   const [replayOnboardingCounter, setReplayOnboardingCounter] = useState(0);
-
-  // The old auto-set forced 0 for the simulated source, which meant "accept
-  // all" under the previous semantics but now means a 0% deviation tolerance —
-  // i.e. every beat flagged unclean. The simulated source applies no quality
-  // gate at all, so there is nothing to configure for it; leave the user's
-  // chosen tolerance alone.
-  const handleSetSourceType = (t: DataSourceType) => {
-    setSourceType(t);
-  };
-
-  const requestBaselineReset = () => {
-    setBaselineResetCounter(c => c + 1);
-  };
-
-  const requestForceBaseline = () => {
-    setForceBaselineCounter(c => c + 1);
-  };
-
-  const requestReplayOnboarding = () => {
-    setReplayOnboardingCounter(c => c + 1);
-  };
+  const [devMode, setDevMode] = useState(false);
 
   // Memoize: a fresh object literal here re-rendered every consumer on any
   // state change, including the monitor screen (which already re-renders per
   // beat) on unrelated settings edits.
   const value = useMemo(() => ({
     sourceType,
-    setSourceType: handleSetSourceType,
+    setSourceType,
     simulatedScenario,
     setSimulatedScenario,
     filterSensitivity,
     setFilterSensitivity,
     baselineResetCounter,
-    requestBaselineReset,
+    requestBaselineReset: () => setBaselineResetCounter(c => c + 1),
     forceBaselineCounter,
-    requestForceBaseline,
+    requestForceBaseline: () => setForceBaselineCounter(c => c + 1),
     ppgValidationMode,
     setPPGValidationMode,
     replayOnboardingCounter,
-    requestReplayOnboarding,
+    requestReplayOnboarding: () => setReplayOnboardingCounter(c => c + 1),
+    devMode,
+    setDevMode,
   }), [
     sourceType, simulatedScenario, filterSensitivity, baselineResetCounter,
-    forceBaselineCounter, ppgValidationMode, replayOnboardingCounter,
+    forceBaselineCounter, ppgValidationMode, replayOnboardingCounter, devMode,
   ]);
 
   return (

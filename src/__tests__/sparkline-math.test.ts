@@ -3,7 +3,7 @@
  */
 import { sparklinePoints, BPM_DOMAIN, SPREAD_DOMAIN } from '../display/sparkline-math';
 
-function parsePoints(str: string): Array<[number, number]> {
+function parsePoints(str: string): [number, number][] {
   if (str === '') return [];
   return str.split(' ').map(p => {
     const [x, y] = p.split(',').map(Number);

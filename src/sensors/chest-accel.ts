@@ -59,8 +59,10 @@ export function startChestAccel(): boolean {
         magnitude: mag,
       };
       buffer.push(sample);
+      // Drop one sample rather than re-slicing the whole 3,000-element
+      // buffer 25 times a second once it is full.
       if (buffer.length > BUFFER_SIZE) {
-        buffer = buffer.slice(buffer.length - BUFFER_SIZE);
+        buffer.shift();
       }
     },
   );

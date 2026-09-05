@@ -77,6 +77,10 @@ export interface PipelineState {
   isLearningBaseline: boolean;
   /** Baseline beat count (for display) */
   baselineBeatCount: number;
+  /** Rhythm observed toward the baseline's 5-minute rule, in ms */
+  baselineObservedMs: number;
+  /** Feature windows the baseline learner has collected so far */
+  baselineSampleCount: number;
   /** True only on the beat where the baseline was just established */
   baselineJustEstablished: boolean;
   /** 15-beat rolling average BPM */
@@ -124,9 +128,14 @@ function computeRespiratoryPeriod(ppis: number[]): number {
     acf.push(sum / variance);
   }
 
-  // Find first peak: acf[i] > acf[i-1] && acf[i] > acf[i+1] && acf[i] > 0.1
+  // Find the first peak that clears the noise floor. For n=60 the standard
+  // error of a normalised ACF is ~1/sqrt(60) = 0.13, so a 0.1 threshold
+  // accepted pure-noise peaks: Lock-Step / Mosh Pit / Stumble got 5-8 beat
+  // trails (a lone head dot) instead of the 20-beat default. 2/sqrt(n)
+  // keeps NSR's genuine respiratory peak (~0.5) and rejects noise.
+  const threshold = 2 / Math.sqrt(n);
   for (let i = 1; i < acf.length - 1; i++) {
-    if (acf[i] > acf[i - 1] && acf[i] > acf[i + 1] && acf[i] > 0.1) {
+    if (acf[i] > acf[i - 1] && acf[i] > acf[i + 1] && acf[i] > threshold) {
       return minLag + i;
     }
   }
@@ -166,6 +175,13 @@ export class PipelineCore {
   private readonly verbose: boolean;
   private state: PipelineState;
 
+  // Displayed-dance hysteresis. A single blended window (e.g. the 60-beat
+  // window straddling a rhythm change, or a Waltz window that lands nearest
+  // The Sway once in ~30) renamed the card for ~8 s. A new name is adopted
+  // only when two consecutive windows agree, so one-off flips never show.
+  private committedMatch: DanceMatch | null = null;
+  private candidateName: string | null = null;
+
   constructor(
     private readonly baselineService: BaselineService,
     options: PipelineCoreOptions = {},
@@ -190,9 +206,11 @@ export class PipelineCore {
       baselineLearningProgress: this.baselineService.getLearningProgress(),
       isLearningBaseline: this.baselineService.isLearning(),
       baselineBeatCount: this.baselineService.getSampleCount(),
+      baselineObservedMs: this.baselineService.getObservedMs(),
+      baselineSampleCount: this.baselineService.getFeatureSampleCount(),
       baselineJustEstablished: false,
       trailLength: DEFAULT_TRAIL_LENGTH,
-      featureHistory: [],
+      featureHistory: [...this.featureHistory],
       gapCount: this.gapCount,
       featuresUnavailable: false,
     };
@@ -248,6 +266,13 @@ export class PipelineCore {
     if (this.ppiBuffer.length > TORUS_WINDOW) this.ppiBuffer.shift();
     this.totalBeats++;
 
+    // Count every raw beat for baseline learning — including the very first
+    // one after a start or reset. Counting only from the second beat left
+    // the indicator at 199/200 after 200 beats and made "Establish Baseline
+    // Now" fail at the exact moment the count looked complete.
+    const bs = this.baselineService;
+    bs.countBeat(timestampMs);
+
     const buf = this.ppiBuffer;
     if (buf.length < 2) {
       this.state = {
@@ -255,6 +280,11 @@ export class PipelineCore {
         totalBeats: this.totalBeats,
         gapCount: this.gapCount,
         baselineJustEstablished: false,
+        baselineLearningProgress: bs.getLearningProgress(),
+        isLearningBaseline: bs.isLearning(),
+        baselineBeatCount: bs.getSampleCount(),
+        baselineObservedMs: bs.getObservedMs(),
+        baselineSampleCount: bs.getFeatureSampleCount(),
       };
       return this.state;
     }
@@ -325,10 +355,6 @@ export class PipelineCore {
       }
     }
 
-    // Count every raw beat for baseline learning
-    const bs = this.baselineService;
-    bs.countBeat(timestampMs);
-
     // BPM + torus display update on EVERY beat
     const currentBpm = buf.length >= 2 ? Math.round(60000 / mean(buf)) : null;
     const last15 = buf.slice(-15);
@@ -351,6 +377,8 @@ export class PipelineCore {
       baselineLearningProgress: bs.getLearningProgress(),
       isLearningBaseline: bs.isLearning(),
       baselineBeatCount: bs.getSampleCount(),
+      baselineObservedMs: bs.getObservedMs(),
+      baselineSampleCount: bs.getFeatureSampleCount(),
       gapCount: this.gapCount,
       ...trailUpdate,
     };
@@ -375,6 +403,8 @@ export class PipelineCore {
         if (this.verbose) {
           console.log(`[Dance] beat=${this.totalBeats} degenerate geometry — features unavailable`);
         }
+        this.committedMatch = null;
+        this.candidateName = null;
         update = {
           ...update,
           danceMatch: null,
@@ -393,6 +423,7 @@ export class PipelineCore {
 
         const match = matchDance(km, g, s);
         match.bpm = currentBpm ?? 0;
+        const displayed = this.commitDance(match);
 
         // Diagnostic: verify features match expected dance centroids
         if (this.verbose) {
@@ -423,7 +454,7 @@ export class PipelineCore {
 
         update = {
           ...update,
-          danceMatch: match,
+          danceMatch: displayed,
           kappaMedian: km,
           gini: g,
           spread: s,
@@ -434,6 +465,8 @@ export class PipelineCore {
           baselineLearningProgress: bs.getLearningProgress(),
           isLearningBaseline: bs.isLearning(),
           baselineBeatCount: bs.getSampleCount(),
+          baselineObservedMs: bs.getObservedMs(),
+          baselineSampleCount: bs.getFeatureSampleCount(),
           featureHistory: [...this.featureHistory],
           featuresUnavailable: false,
         };
@@ -444,19 +477,52 @@ export class PipelineCore {
     return this.state;
   }
 
-  /** Reset everything except the baseline (mirrors a source change). */
-  reset(): void {
+  /**
+   * Two-window hysteresis for the displayed dance (see field comment).
+   * Returns the match to display: the newly agreed one, or the committed one.
+   */
+  private commitDance(match: DanceMatch): DanceMatch {
+    const committed = this.committedMatch;
+    if (committed === null || match.name === committed.name) {
+      this.committedMatch = match;
+      this.candidateName = null;
+      return match;
+    }
+    if (this.candidateName === match.name) {
+      // Second consecutive window with the new name — adopt it.
+      this.committedMatch = match;
+      this.candidateName = null;
+      return match;
+    }
+    this.candidateName = match.name;
+    // Keep the committed name, but with this window's rate.
+    const held: DanceMatch = { ...committed, bpm: match.bpm };
+    this.committedMatch = held;
+    return held;
+  }
+
+  /**
+   * Reset the geometry (mirrors a source change). The baseline is never
+   * touched here.
+   *
+   * @param options.keepHistory - Preserve the feature-window trend history so
+   *   the rate-vs-geometry strip can show "before" and "after" across a
+   *   simulated scenario switch; a clean source change should clear it.
+   */
+  reset(options: { keepHistory?: boolean } = {}): void {
     this.ppiBuffer = [];
     this.kappaBuffer = [];
     this.displayPoints = [];
     this.featurePoints = [];
-    this.featureHistory = [];
+    if (!options.keepHistory) this.featureHistory = [];
     this.totalBeats = 0;
     this.gapCount = 0;
     this.adaptiveMin = PPI_MIN;
     this.adaptiveMax = PPI_MAX;
     this.watchdog.reset();
     this.changeDetector.reset();
+    this.committedMatch = null;
+    this.candidateName = null;
     this.state = this.buildInitialState();
   }
 
@@ -473,8 +539,19 @@ export class PipelineCore {
       baselineLearningProgress: this.baselineService.getLearningProgress(),
       isLearningBaseline: this.baselineService.isLearning(),
       baselineBeatCount: this.baselineService.getSampleCount(),
+      baselineObservedMs: this.baselineService.getObservedMs(),
+      baselineSampleCount: this.baselineService.getFeatureSampleCount(),
       baselineJustEstablished: false,
     };
     return this.state;
+  }
+
+  /**
+   * Re-read baseline-related fields after the BaselineService was swapped or
+   * reloaded (e.g. a namespace switch). Geometry is untouched.
+   */
+  syncBaselineState(): PipelineState {
+    this.changeDetector.reset();
+    return this.onBaselineReset();
   }
 }

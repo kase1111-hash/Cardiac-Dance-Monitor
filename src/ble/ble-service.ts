@@ -5,7 +5,8 @@
  *
  * Two BLE modes:
  * - Standard HR (0x180D): Heart Rate Measurement (0x2A37) → HR + RR intervals
- * - Raw PPG via Nordic UART: Two packet types on TX characteristic (6e400003-...):
+ * - Raw PPG via Nordic UART: Two packet types on characteristic 0xFFF1
+ *   (advertised under the Nordic UART service):
  *     • Short (2 bytes):  raw PPG waveform at 28 Hz → PPGProcessor → PPIs
  *     • Long  (13 bytes): computed SpO2/BPM/PI once per second → display + validation
  *
@@ -89,6 +90,12 @@ export interface PulseOxInterface {
   signalQuality: SignalQuality;
   /** Source identifier for display */
   sourceName: string;
+  /**
+   * Short, user-facing explanation of a disconnected/idle state (sensor not
+   * found, Bluetooth off, camera unavailable), or null when there is nothing
+   * to say. Never clinical.
+   */
+  statusMessage?: string | null;
 }
 
 /**

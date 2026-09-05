@@ -17,6 +17,21 @@
 // to simulate Expo Go / device policy / missing binary scenarios
 // ============================================================================
 
+// ============================================================================
+// Imports — these run AFTER the mocks are installed
+// ============================================================================
+
+import {
+  toAngle, mengerCurvature, giniCoefficient,
+  median, mean, std,
+} from '../../shared/torus-engine';
+import { matchDance } from '../../shared/dance-matcher';
+import { QualityGate } from '../../shared/quality-gate';
+import { RhythmSimulator } from '../../shared/simulator';
+import {
+  PPI_MIN, PPI_MAX, TORUS_WINDOW, KAPPA_WINDOW } from '../../shared/constants';
+import { SessionExporter } from '../session/session-export';
+
 jest.mock('react-native-ble-plx', () => {
   throw new Error('Cannot read property \'createClient\' of null');
 });
@@ -104,23 +119,6 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
     multiGet: jest.fn().mockResolvedValue([]),
   },
 }));
-
-// ============================================================================
-// Imports — these run AFTER the mocks are installed
-// ============================================================================
-
-import {
-  toAngle, mengerCurvature, giniCoefficient,
-  median, mean, std,
-} from '../../shared/torus-engine';
-import { matchDance } from '../../shared/dance-matcher';
-import { QualityGate } from '../../shared/quality-gate';
-import { RhythmSimulator } from '../../shared/simulator';
-import {
-  PPI_MIN, PPI_MAX, TORUS_WINDOW, KAPPA_WINDOW,
-  DANCE_UPDATE_INTERVAL,
-} from '../../shared/constants';
-import { SessionExporter } from '../session/session-export';
 
 // ============================================================================
 // 1. Module Import Safety Tests
@@ -330,7 +328,7 @@ describe('Pipeline Independence — no native modules needed', () => {
     const sim = new RhythmSimulator({ scenario: 'nsr' });
     const ppiBuffer: number[] = [];
     const kappaBuffer: number[] = [];
-    const points: Array<[number, number]> = [];
+    const points: [number, number][] = [];
 
     for (let i = 0; i < 30; i++) {
       const ppi = sim.next();
@@ -591,7 +589,7 @@ describe('Device Unavailability', () => {
   });
 
   test('RhythmSimulator produces valid PPIs for all scenarios', () => {
-    const scenarios: Array<'nsr' | 'chf' | 'af' | 'pvc' | 'transition'> =
+    const scenarios: ('nsr' | 'chf' | 'af' | 'pvc' | 'transition')[] =
       ['nsr', 'chf', 'af', 'pvc', 'transition'];
 
     for (const scenario of scenarios) {

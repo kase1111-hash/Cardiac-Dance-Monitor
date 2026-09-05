@@ -1,11 +1,13 @@
 /**
  * History tab — lists past sessions with date, duration, dominant dance, beat count.
- * Per SPEC Section 7.
+ * Per SPEC Section 7. The session currently recording on the Monitor tab is
+ * checkpointed whenever that tab loses focus, so it appears here too.
  */
 import React, { useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, SafeAreaView, FlatList, TouchableOpacity, Alert,
+  View, Text, StyleSheet, FlatList, TouchableOpacity, Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { sessionStore } from '../../src/session/session-store-instance';
 import type { Session } from '../../src/session/session-types';
@@ -32,11 +34,13 @@ export default function HistoryScreen() {
   const router = useRouter();
   const [sessions, setSessions] = useState<Session[]>([]);
 
-  useFocusEffect(
-    useCallback(() => {
-      store.getSessions().then(setSessions);
-    }, []),
-  );
+  const refresh = useCallback(() => {
+    store.getSessions()
+      .then(setSessions)
+      .catch(e => console.warn('HISTORY_LOAD_FAILED:', e?.message ?? e));
+  }, []);
+
+  useFocusEffect(refresh);
 
   const handleDelete = (id: string) => {
     Alert.alert('Delete Session', 'Remove this session from history?', [
@@ -45,9 +49,12 @@ export default function HistoryScreen() {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
-          await store.deleteSession(id);
-          const updated = await store.getSessions();
-          setSessions(updated);
+          try {
+            await store.deleteSession(id);
+          } catch (e: any) {
+            Alert.alert('Could not delete', e?.message ?? 'Storage is unavailable.');
+          }
+          refresh();
         },
       },
     ]);
@@ -77,25 +84,29 @@ export default function HistoryScreen() {
           )}
         </View>
         <View style={styles.stats}>
-          <Text style={styles.statValue}>{item.summaryStats?.bpmMean ?? '--'}</Text>
+          <Text style={styles.statValue}>{item.summaryStats?.bpmMean || '--'}</Text>
           <Text style={styles.statLabel}>BPM</Text>
         </View>
+        <Text style={styles.chevron}>›</Text>
       </TouchableOpacity>
     );
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
         <Text style={styles.title}>History</Text>
-        <Text style={styles.count}>{sessions.length} sessions</Text>
+        <Text style={styles.count}>
+          {sessions.length} session{sessions.length === 1 ? '' : 's'}
+        </Text>
       </View>
       {sessions.length === 0 ? (
         <View style={styles.empty}>
-          <Text style={styles.emptyText}>No sessions recorded yet</Text>
+          <Text style={styles.emptyText}>No sessions yet</Text>
           <Text style={styles.emptySubtext}>
-            Sessions are recorded automatically when receiving pulse data.
-            Tap a session to view details and export; long-press to delete.
+            Sessions record automatically on the Monitor tab and appear here
+            as soon as you leave that tab. Tap a session for details and
+            export; long-press to delete.
           </Text>
         </View>
       ) : (
@@ -104,6 +115,9 @@ export default function HistoryScreen() {
           keyExtractor={item => item.id}
           renderItem={renderSession}
           contentContainerStyle={styles.list}
+          ListFooterComponent={
+            <Text style={styles.footer}>Tap for details and export · long-press to delete</Text>
+          }
         />
       )}
     </SafeAreaView>
@@ -181,6 +195,17 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontFamily: 'monospace',
   },
+  chevron: {
+    color: '#64748b',
+    fontSize: 22,
+    marginLeft: 10,
+  },
+  footer: {
+    color: '#64748b',
+    fontSize: 11,
+    textAlign: 'center',
+    paddingVertical: 12,
+  },
   empty: {
     flex: 1,
     justifyContent: 'center',
@@ -188,12 +213,13 @@ const styles = StyleSheet.create({
     padding: 32,
   },
   emptyText: {
-    color: '#64748b',
+    color: '#94a3b8',
     fontSize: 16,
   },
   emptySubtext: {
-    color: '#475569',
+    color: '#64748b',
     fontSize: 13,
+    lineHeight: 19,
     textAlign: 'center',
     marginTop: 8,
   },

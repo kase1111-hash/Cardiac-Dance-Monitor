@@ -7,8 +7,9 @@
  * policy, missing native module, etc.), the error is caught and the rest
  * of the app continues working.
  */
-import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { View, Text, StyleSheet, Platform, Linking, AppState } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import {
   Camera,
   useCameraDevice,
@@ -17,6 +18,7 @@ import {
   useFrameProcessor,
 } from 'react-native-vision-camera';
 import { useRunOnJS } from 'react-native-worklets-core';
+import { IS_DEV } from '../../shared/debug';
 
 interface Props {
   onFrame: (redMean: number, timestampMs: number) => void;
@@ -28,11 +30,17 @@ interface Props {
 const GRID_SIZE = 10;
 const CROP_SIZE = 100;
 
+// VisionCamera's frame.timestamp is in NANOSECONDS on Android (CameraX
+// ImageInfo.getTimestamp) but already in MILLISECONDS on iOS
+// (CMTimeGetSeconds * 1000). Dividing both by 1e6 put iOS frames 0.00003 ms
+// apart, so no interval ever cleared PPI_MIN and iOS never produced a beat.
+const FRAME_TIMESTAMP_DIVISOR = Platform.OS === 'ios' ? 1 : 1_000_000;
+
 // Throttle frame logs to once per second (avoid flooding)
 let lastFrameLogTime = 0;
 let frameCount = 0;
 
-export default function CameraPPGNative({ onFrame, active, ppgState, peakCount }: Props) {
+function CameraPPGNative({ onFrame, active, ppgState, peakCount }: Props) {
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('back');
   const format = useCameraFormat(device, [
@@ -40,17 +48,52 @@ export default function CameraPPGNative({ onFrame, active, ppgState, peakCount }
     { videoResolution: { width: 320, height: 240 } },
   ]);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [permissionDenied, setPermissionDenied] = useState(false);
+
+  // Ask for the camera as soon as this mounts. Previously the only prompt was
+  // a small "tap to grant" link inside a 120 px box that presenters missed.
+  useEffect(() => {
+    if (hasPermission) return;
+    let cancelled = false;
+    requestPermission().then(granted => {
+      if (!cancelled && !granted) setPermissionDenied(true);
+    }).catch(() => { /* prompt unavailable — the link below still works */ });
+    return () => { cancelled = true; };
+  }, [hasPermission, requestPermission]);
+
+  // The camera (and torch) must not run while another tab is showing or the
+  // app is in the background — otherwise the flashlight stays on and frames
+  // keep flowing from a lens nobody is touching.
+  const [focused, setFocused] = useState(true);
+  useFocusEffect(useCallback(() => {
+    setFocused(true);
+    return () => setFocused(false);
+  }, []));
+  const [appActive, setAppActive] = useState(AppState.currentState !== 'background');
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', next => setAppActive(next === 'active'));
+    return () => sub.remove();
+  }, []);
+  const running = active && focused && appActive;
+
+  // The parent's callback identity changes per render; route frames through a
+  // ref so the runOnJS bridge and the native frame processor are built once
+  // instead of being re-installed several times per second.
+  const onFrameRef = useRef(onFrame);
+  useEffect(() => { onFrameRef.current = onFrame; }, [onFrame]);
 
   const handleRedMean = useRunOnJS((redMean: number, timestamp: number) => {
-    frameCount++;
-    const now = Date.now();
-    if (now - lastFrameLogTime > 1000) {
-      console.log('CAMERA_FRAME: red=' + redMean.toFixed(1) + ' ts=' + timestamp.toFixed(0) + ' frames/sec=' + frameCount);
-      frameCount = 0;
-      lastFrameLogTime = now;
+    if (IS_DEV) {
+      frameCount++;
+      const now = Date.now();
+      if (now - lastFrameLogTime > 1000) {
+        console.log('CAMERA_FRAME: red=' + redMean.toFixed(1) + ' ts=' + timestamp.toFixed(0) + ' frames/sec=' + frameCount);
+        frameCount = 0;
+        lastFrameLogTime = now;
+      }
     }
-    onFrame(redMean, timestamp);
-  }, [onFrame]);
+    onFrameRef.current(redMean, timestamp);
+  }, []);
 
   const frameProcessor = useFrameProcessor((frame) => {
     'worklet';
@@ -92,19 +135,26 @@ export default function CameraPPGNative({ onFrame, active, ppgState, peakCount }
     }
 
     const redMean = count > 0 ? sum / count : 0;
-    const timestamp = frame.timestamp / 1000000;
+    const timestamp = frame.timestamp / FRAME_TIMESTAMP_DIVISOR;
 
     handleRedMean(redMean, timestamp);
   }, [handleRedMean]);
-
-  console.log('CAMERA_ACTIVE: rendering CameraPPGNative — device=' + !!device + ' format=' + !!format + ' permission=' + hasPermission + ' active=' + active + ' ppgState=' + ppgState);
 
   if (!hasPermission) {
     return (
       <View style={styles.container}>
         <Text style={styles.text}>Camera permission required</Text>
-        <Text style={styles.permissionLink} onPress={requestPermission}>
-          Tap to grant permission
+        <Text
+          style={styles.permissionLink}
+          onPress={() => {
+            if (permissionDenied) {
+              void Linking.openSettings();
+            } else {
+              requestPermission().then(granted => setPermissionDenied(!granted)).catch(() => {});
+            }
+          }}
+        >
+          {permissionDenied ? 'Open Settings to allow the camera' : 'Tap to allow the camera'}
         </Text>
       </View>
     );
@@ -118,8 +168,7 @@ export default function CameraPPGNative({ onFrame, active, ppgState, peakCount }
     );
   }
 
-  if (!active) {
-    console.log('CAMERA_STARTED: isActive=false — Camera component will not render');
+  if (!running) {
     return null;
   }
 
@@ -138,15 +187,13 @@ export default function CameraPPGNative({ onFrame, active, ppgState, peakCount }
       ? 'Recording — hold still'
       : 'Starting camera...';
 
-  console.log('CAMERA_STARTED: isActive=true — mounting Camera component with torch=on pixelFormat=rgb');
-
   return (
     <View style={styles.container}>
       <Camera
         style={styles.camera}
         device={device}
-        isActive={active}
-        torch="on"
+        isActive={running}
+        torch={running ? 'on' : 'off'}
         format={format}
         fps={format ? 30 : undefined}
         pixelFormat="rgb"
@@ -156,12 +203,12 @@ export default function CameraPPGNative({ onFrame, active, ppgState, peakCount }
           setCameraError(error.message);
         }}
         onStarted={() => {
-          console.log('CAMERA_STARTED: Camera.onStarted fired — frame processor should begin');
+          if (IS_DEV) console.log('CAMERA_STARTED: Camera.onStarted fired');
         }}
       />
       <View style={styles.overlay}>
         <Text style={styles.instruction}>
-          Place fingertip over camera lens
+          Cover the rear lens and flash with a fingertip
         </Text>
         <View style={styles.statusBadge}>
           <View style={[
@@ -174,6 +221,8 @@ export default function CameraPPGNative({ onFrame, active, ppgState, peakCount }
     </View>
   );
 }
+
+export default React.memo(CameraPPGNative);
 
 const styles = StyleSheet.create({
   container: {

@@ -87,6 +87,15 @@ export class AlertService {
     return this.previousLevel;
   }
 
+  /**
+   * Forget the 30-minute suppression but keep the level history, so a new
+   * experiment (e.g. a simulated scenario switch) can alert again while a
+   * later return to baseline still produces the recovery event.
+   */
+  clearSuppression(): void {
+    this.lastAlertTimestamp = null;
+  }
+
   /** Reset the alert service. */
   reset(): void {
     this.lastAlertTimestamp = null;

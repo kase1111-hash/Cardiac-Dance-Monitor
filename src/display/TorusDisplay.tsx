@@ -12,7 +12,7 @@
  *   rendered as a thick fading polyline with per-segment opacity gradient.
  *   When RSA is present, the snake traces one complete respiratory ellipse.
  * - Head: large white dot + outer ring
- * - Beat counter + point count overlay
+ * - Beat counter overlay
  */
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
@@ -38,16 +38,8 @@ function angleToPixel(angle: number, size: number, padding: number): number {
   return padding + (angle / TWO_PI) * usable;
 }
 
-export function TorusDisplay({ points, danceName, size, trailLength = 20 }: Props) {
-  // Diagnostic: prove the component receives all points every beat
+function TorusDisplayComponent({ points, danceName, size, trailLength = 20 }: Props) {
   const latest = points.length > 0 ? points[points.length - 1] : null;
-  if (latest) {
-    console.log(
-      `TORUS_RENDER pts=${points.length} latest=#${latest.beatIndex}` +
-      ` θ1=${latest.theta1.toFixed(2)} θ2=${latest.theta2.toFixed(2)}` +
-      ` trail=${trailLength}`,
-    );
-  }
 
   const color = getDanceColor(danceName);
   const padding = 24;
@@ -72,11 +64,6 @@ export function TorusDisplay({ points, danceName, size, trailLength = 20 }: Prop
 
   // Beat count from latest point's beatIndex
   const beatCount = latest?.beatIndex ?? 0;
-
-  // Dim polyline for ALL points (faint history trace)
-  const allPolyStr = points
-    .map(p => `${angleToPixel(p.theta1, size, padding)},${angleToPixel(p.theta2, size, padding)}`)
-    .join(' ');
 
   return (
     <View style={[styles.container, { width: size, height: size }]}>
@@ -210,14 +197,14 @@ export function TorusDisplay({ points, danceName, size, trailLength = 20 }: Prop
         {/* Axis labels */}
         <SvgText
           x={size / 2} y={size - 4}
-          fill="#475569" fontSize={10}
+          fill="#64748b" fontSize={10}
           textAnchor="middle" fontFamily="monospace"
         >
           {'RR(n) \u2192'}
         </SvgText>
         <SvgText
           x={8} y={size / 2}
-          fill="#475569" fontSize={10}
+          fill="#64748b" fontSize={10}
           textAnchor="middle" fontFamily="monospace"
           rotation={-90}
           originX={8} originY={size / 2}
@@ -225,7 +212,7 @@ export function TorusDisplay({ points, danceName, size, trailLength = 20 }: Prop
           {'RR(n+1) \u2192'}
         </SvgText>
 
-        {/* Beat counter + point count — top-right corner */}
+        {/* Beat counter — top-right corner */}
         <SvgText
           x={size - padding - 4} y={padding + 16}
           fill="#94a3b8" fontSize={14} fontWeight="bold"
@@ -233,17 +220,12 @@ export function TorusDisplay({ points, danceName, size, trailLength = 20 }: Prop
         >
           {`#${beatCount}`}
         </SvgText>
-        <SvgText
-          x={size - padding - 4} y={padding + 30}
-          fill="#475569" fontSize={10}
-          textAnchor="end" fontFamily="monospace"
-        >
-          {`${points.length} pts`}
-        </SvgText>
       </Svg>
     </View>
   );
 }
+
+export const TorusDisplay = React.memo(TorusDisplayComponent);
 
 const styles = StyleSheet.create({
   container: {

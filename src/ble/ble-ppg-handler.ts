@@ -2,7 +2,8 @@
  * BLE PPG handler — processes raw PPG waveform data and status packets from
  * Nordic UART devices (Innovo iP900BP-B and similar).
  *
- * Two packet types arrive on the TX characteristic (6e400003-...):
+ * Two packet types arrive on characteristic 0xFFF1 (advertised under the
+ * Nordic UART service):
  * - Short (2 bytes, ~28 Hz): raw PPG intensity → PPGProcessor → PPIs
  * - Long  (13 bytes, ~1 Hz): device-computed SpO2/BPM/PI → display + validation
  *
@@ -15,6 +16,7 @@
  */
 import { PPGProcessor } from '../camera/ppg-processor';
 import { parseInnovoPacket, parsePPGPacket, type StatusPacket } from './ble-service';
+import { debugLog } from '../../shared/debug';
 
 /** Innovo raw PPG sample rate in Hz (measured from real device captures). */
 export const INNOVO_PPG_SAMPLE_RATE = 28;
@@ -50,7 +52,7 @@ export class BLEPPGHandler {
   }
 
   /**
-   * Handle a raw BLE notification from the Nordic UART TX characteristic.
+   * Handle a raw BLE notification from characteristic 0xFFF1.
    * Discriminates packet type by length and routes accordingly.
    *
    * @param data - Raw notification bytes (2 bytes: raw PPG, 13 bytes: status)
@@ -72,18 +74,21 @@ export class BLEPPGHandler {
     }
 
     if (packet.type === 'status') {
-      console.log('BLE_STATUS spo2=' + packet.spo2 + ' bpm=' + packet.bpm + ' pi=' + packet.perfusionIndex);
+      debugLog('BLE_STATUS spo2=' + packet.spo2 + ' bpm=' + packet.bpm + ' pi=' + packet.perfusionIndex);
       this._latestStatus = packet;
-      // Update finger presence from status packet too
-      this.updateFingerPresence(packet.fingerPresent);
+      // Status packets are informational only. Their fingerPresent flag is
+      // derived from the device having LOCKED a reading (bpm > 0 / valid
+      // SpO2), which lags the finger by 5-10 s and never happens at all with
+      // poor perfusion. Letting it drive finger presence reset the processor
+      // once a second during acquisition, so a perfectly good waveform
+      // produced zero PPIs. The 28 Hz raw packets carry the real finger bit.
       if (this.onStatus) {
         this.onStatus(packet);
       }
       return;
     }
 
-    // Raw PPG packet
-    console.log('BLE_PPG value=' + packet.intensity);
+    // Raw PPG packet (28 Hz — never logged per sample)
     this.handleRawPPG(packet.fingerPresent, packet.intensity, timestampMs);
   }
 
@@ -156,7 +161,7 @@ export class BLEPPGHandler {
   /** Wire the onPPI callback through to the processor. */
   private wireOnPPI(): void {
     this.processor.onPPI = (ppi: number) => {
-      console.log('BLE_PPI=' + ppi);
+      debugLog('BLE_PPI=' + ppi);
       if (this.onPPI) {
         this.onPPI(ppi);
       }

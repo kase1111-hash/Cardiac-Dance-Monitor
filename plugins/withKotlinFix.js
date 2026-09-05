@@ -1,32 +1,21 @@
 /**
- * Config plugin to suppress Kotlin version compatibility check.
+ * Expo config plugin: Kotlin version compatibility guard for Android builds.
  *
- * EAS Build may use Kotlin 1.9.25 while the Compose Compiler bundled
- * with SDK 52 expects 1.9.24. This plugin writes the suppress flag
- * to android/gradle.properties during prebuild.
- *
- * Belt-and-suspenders approach: expo-build-properties pins kotlinVersion
- * to 1.9.24, and this plugin suppresses the check as a fallback in case
- * the build server overrides the Kotlin version.
+ * app.json pins Kotlin 1.9.25 via expo-build-properties, which SDK 52's
+ * expo-modules-core maps to a matching Compose compiler. As a belt-and-braces
+ * guard for any dependency that still compares Kotlin versions strictly, this
+ * plugin writes `kotlin.suppressKotlinVersionCompatibilityCheck=true` to
+ * gradle.properties so a minor mismatch never fails the EAS build.
  */
-const { withGradleProperties } = require('expo/config-plugins');
+const { withGradleProperties } = require('@expo/config-plugins');
 
-function withKotlinFix(config) {
-  return withGradleProperties(config, (config) => {
-    // Remove any existing entries to avoid duplicates
-    config.modResults = config.modResults.filter(
-      (item) => item.key !== 'kotlin.suppressKotlinVersionCompatibilityCheck'
+module.exports = function withKotlinFix(config) {
+  return withGradleProperties(config, (cfg) => {
+    const key = 'kotlin.suppressKotlinVersionCompatibilityCheck';
+    cfg.modResults = cfg.modResults.filter(
+      (item) => !(item.type === 'property' && item.key === key),
     );
-
-    // Add the suppress flag
-    config.modResults.push({
-      type: 'property',
-      key: 'kotlin.suppressKotlinVersionCompatibilityCheck',
-      value: 'true',
-    });
-
-    return config;
+    cfg.modResults.push({ type: 'property', key, value: 'true' });
+    return cfg;
   });
-}
-
-module.exports = withKotlinFix;
+};

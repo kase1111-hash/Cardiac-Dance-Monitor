@@ -8,7 +8,7 @@
  * File operations (expo-file-system, expo-sharing, expo-print)
  * are handled by the UI layer, not this module.
  */
-import type { Session, RawBeat } from './session-types';
+import type { Session } from './session-types';
 
 function formatTimestamp(ms: number): string {
   return new Date(ms).toISOString();

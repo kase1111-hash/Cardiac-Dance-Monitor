@@ -1,5 +1,5 @@
 /**
- * Innovo BLE pulse oximeter hook — scans for Innovo iP900BPB via Nordic UART
+ * Innovo BLE pulse oximeter hook — scans for Innovo iP900BP-B via Nordic UART
  * service, connects, subscribes to 0xFFF1 notifications, and routes data
  * through BLEPPGHandler.
  *
@@ -19,15 +19,21 @@
  *   - Auto-reconnect with exponential backoff (ReconnectPolicy); reports
  *     'reconnecting' status, gives up to 'disconnected' after max attempts
  *
+ * Every way of ending up 'disconnected' (scan timeout, Bluetooth off,
+ * permission denied, reconnect exhausted) leaves a plain-language
+ * `statusMessage` and allows connect() to be called again to retry —
+ * previously the only way to retry was to switch data source in Settings.
+ *
  * IMPORTANT: react-native-ble-plx is loaded via try-catch require() so the
  * app starts cleanly even if the native module is missing or crashes (Expo Go,
  * device policy, etc.). BLE features degrade gracefully to "BLE not available".
  */
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Platform, PermissionsAndroid, Alert } from 'react-native';
 import { BLEPPGHandler, INNOVO_PPG_SAMPLE_RATE } from './ble-ppg-handler';
 import { QualityGate } from '../../shared/quality-gate';
 import { PPI_DEVIATION_MAX } from '../../shared/constants';
+import { debugLog, IS_DEV } from '../../shared/debug';
 import { ReconnectPolicy } from './reconnect-policy';
 import type {
   PulseOxInterface,
@@ -56,8 +62,15 @@ try {
   console.warn('BLE_LOAD_FAILED:', bleLoadError);
 }
 
-/** Stop scanning if no matching device is found within this window. */
-const SCAN_TIMEOUT_MS = 15000;
+/** User-facing product name (the advertised BLE name is INNOVO_DEVICE_NAME). */
+export const INNOVO_DISPLAY_NAME = 'Innovo iP900BP-B';
+
+/**
+ * Stop scanning if no matching device is found within this window. 30 s
+ * rather than 15: presenters routinely select the source first and only
+ * then power the oximeter and insert a finger.
+ */
+const SCAN_TIMEOUT_MS = 30000;
 /** No notifications for this long while "connected" = stalled link → reconnect. */
 const NOTIFICATION_STALL_MS = 10000;
 /** How often the stall watchdog checks for silence. */
@@ -66,6 +79,15 @@ const STALL_CHECK_INTERVAL_MS = 3000;
 /** FFF0 indications trigger PPG streaming on FFF1 (CCCD enable side effect). */
 const FFF0_CHARACTERISTIC_UUID = '0000fff0-0000-1000-8000-00805f9b34fb';
 
+const MSG_NOT_FOUND =
+  `No ${INNOVO_DISPLAY_NAME} found. Turn it on and insert a finger, then tap to scan again.`;
+const MSG_BLUETOOTH_OFF = 'Bluetooth is off. Turn on Bluetooth, then tap to scan again.';
+const MSG_BLUETOOTH_UNAUTHORIZED =
+  'Bluetooth access was denied. Allow Bluetooth for this app in Settings, then tap to scan again.';
+const MSG_LINK_LOST = `Lost the connection to the ${INNOVO_DISPLAY_NAME}. Tap to scan again.`;
+const MSG_NO_MODULE =
+  'Bluetooth needs a development build — it is not available in Expo Go.';
+
 export interface InnovoPulseOxResult extends PulseOxInterface {
   spo2: number | null;
   perfusionIndex: number | null;
@@ -73,20 +95,20 @@ export interface InnovoPulseOxResult extends PulseOxInterface {
   scanning: boolean;
   /** If BLE native module failed to load, this contains the error message */
   bleUnavailableReason: string | null;
+  statusMessage: string | null;
 }
 
 // Singleton BleManager — must not be recreated per render
 let sharedManager: any = null;
 function getManager(): any | null {
   if (!BleManagerClass) {
-    console.log('BLE_INIT: manager is null — BleManagerClass failed to load');
+    debugLog('BLE_INIT: manager is null — BleManagerClass failed to load');
     return null;
   }
   if (!sharedManager) {
     try {
-      console.log('BLE_INIT: creating manager');
       sharedManager = new BleManagerClass();
-      console.log('BLE_INIT: manager created successfully');
+      debugLog('BLE_INIT: manager created');
     } catch (e: any) {
       console.warn('BLE_INIT: manager creation failed:', e?.message);
       return null;
@@ -96,56 +118,48 @@ function getManager(): any | null {
 }
 
 /**
- * Request Android runtime BLE permissions (API 31+).
- * Returns true if all granted, false if any denied.
+ * Request Android runtime BLE permissions.
+ * Returns null when granted, otherwise a user-facing explanation.
+ *
+ * Android 12+ (API 31): BLUETOOTH_SCAN is declared with
+ * usesPermissionFlags="neverForLocation" (app.json + the ble-plx plugin), so
+ * scanning needs no location permission and no Location Services toggle.
+ * Android 11 and below still tie BLE scanning to fine location.
  */
-async function requestBLEPermissions(): Promise<boolean> {
-  if (Platform.OS !== 'android') {
-    console.log('BLE_PERMS: non-Android platform, skipping permission request');
-    return true;
-  }
+async function requestBLEPermissions(): Promise<string | null> {
+  if (Platform.OS !== 'android') return null;
 
-  console.log('BLE_PERMS: requesting (API level=' + Platform.Version + ')');
+  debugLog('BLE_PERMS: requesting (API level=' + Platform.Version + ')');
 
-  // Android 12+ (API 31) requires BLUETOOTH_SCAN and BLUETOOTH_CONNECT
   if (Platform.Version >= 31) {
     const result = await PermissionsAndroid.requestMultiple([
       PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
       PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
     ]);
     const allGranted = Object.values(result).every(
       v => v === PermissionsAndroid.RESULTS.GRANTED,
     );
-    console.log('BLE_PERMS: granted=' + allGranted, JSON.stringify(result));
+    debugLog('BLE_PERMS: granted=' + allGranted, JSON.stringify(result));
     if (!allGranted) {
-      Alert.alert(
-        'Bluetooth Permissions Required',
-        'Please grant Bluetooth and Location permissions in Settings to connect to the Innovo pulse oximeter.',
-      );
-      return false;
+      return 'Bluetooth permission was denied. Allow "Nearby devices" for this app in Settings, then tap to scan again.';
     }
-    return true;
+    return null;
   }
 
-  // Android < 12: only location needed for BLE scanning
+  // Android < 12: location is what gates BLE scanning
   const granted = await PermissionsAndroid.request(
     PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
     {
       title: 'Location Permission',
-      message: 'Bluetooth Low Energy scanning requires location permission.',
+      message: 'On this Android version, Bluetooth scanning requires the Location permission.',
       buttonPositive: 'OK',
     },
   );
-  console.log('BLE_PERMS: granted=' + (granted === PermissionsAndroid.RESULTS.GRANTED));
+  debugLog('BLE_PERMS: granted=' + (granted === PermissionsAndroid.RESULTS.GRANTED));
   if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-    Alert.alert(
-      'Location Permission Required',
-      'Please grant Location permission in Settings to scan for Bluetooth devices.',
-    );
-    return false;
+    return 'Location permission was denied. On this Android version Bluetooth scanning needs it — allow it in Settings, then tap to scan again.';
   }
-  return true;
+  return null;
 }
 
 /** useRef that constructs its value once, instead of on every render. */
@@ -171,6 +185,7 @@ export function useInnovoPulseOx(
   const [deviceBPM, setDeviceBPM] = useState<number | null>(null);
   const [perfusionIndex, setPerfusionIndex] = useState<number | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   // Lazy-init: plain useRef(new X()) constructs a throwaway object on every
   // render (BLEPPGHandler builds a PPGProcessor + Butterworth coefficients).
@@ -179,7 +194,6 @@ export function useInnovoPulseOx(
   const reconnectPolicy = useLazyRef(() => new ReconnectPolicy());
 
   const seqRef = useRef(0);
-  const stateSubRef = useRef<any>(null);
   const subscriptionRef = useRef<any>(null);
   const fff0SubRef = useRef<any>(null);
   const disconnectSubRef = useRef<any>(null);
@@ -189,8 +203,15 @@ export function useInnovoPulseOx(
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stallIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastNotificationAtRef = useRef(0);
+  const unavailableAlertShownRef = useRef(false);
   // Breaks the setupConnectedDevice ↔ scheduleReconnect callback cycle
   const scheduleReconnectRef = useRef<(deviceId: string) => void>(() => {});
+
+  const clearDeviceReadings = useCallback(() => {
+    setSpo2(null);
+    setDeviceBPM(null);
+    setPerfusionIndex(null);
+  }, []);
 
   const wireHandler = useCallback(() => {
     handler.current.onPPI = (ppi: number) => {
@@ -209,20 +230,22 @@ export function useInnovoPulseOx(
     handler.current.onFingerPresenceChange = (present: boolean) => {
       if (!present) {
         setSignalQuality('poor');
+        // A reading from a finger that is no longer in the sensor is not a
+        // reading — the SpO2 card must not keep showing it under a
+        // "signal lost" banner.
+        clearDeviceReadings();
       }
     };
 
     handler.current.onStatus = (status: StatusPacket) => {
       // > 0, not >= 0: a device still acquiring emits 0, and "SpO2 0%" is an
-      // alarming, meaningless reading. Show nothing until it's real.
-      if (status.spo2 > 0) setSpo2(status.spo2);
-      if (status.bpm > 0) setDeviceBPM(status.bpm);
-      if (status.perfusionIndex > 0) setPerfusionIndex(status.perfusionIndex);
+      // alarming, meaningless reading. Show nothing until it's real — and
+      // clear a previous value once the device stops reporting one.
+      setSpo2(status.spo2 > 0 ? status.spo2 : null);
+      setDeviceBPM(status.bpm > 0 ? status.bpm : null);
+      setPerfusionIndex(status.perfusionIndex > 0 ? status.perfusionIndex : null);
     };
-  }, []);
-
-  /** Cancels a pending "waiting for Bluetooth to power on" promise, if any. */
-  const bluetoothWaitResolveRef = useRef<(() => void) | null>(null);
+  }, [clearDeviceReadings, handler, qualityGate]);
 
   const clearTimers = useCallback(() => {
     if (scanTimeoutRef.current) {
@@ -241,14 +264,6 @@ export function useInnovoPulseOx(
 
   /** Remove all subscriptions and drop the device connection. */
   const teardownConnection = useCallback(() => {
-    if (bluetoothWaitResolveRef.current) {
-      bluetoothWaitResolveRef.current();
-      bluetoothWaitResolveRef.current = null;
-    }
-    if (stateSubRef.current) {
-      stateSubRef.current.remove();
-      stateSubRef.current = null;
-    }
     if (disconnectSubRef.current) {
       disconnectSubRef.current.remove();
       disconnectSubRef.current = null;
@@ -267,6 +282,15 @@ export function useInnovoPulseOx(
     }
   }, []);
 
+  /** Leave the hook idle with an explanation the monitor can show. */
+  const failDisconnected = useCallback((message: string | null) => {
+    activeRef.current = false;
+    setScanning(false);
+    setConnectionStatus('disconnected');
+    setSignalQuality('disconnected');
+    setStatusMessage(message);
+  }, []);
+
   /**
    * Discover services, subscribe to PPG notifications, and arm the disconnect
    * listener + stall watchdog on an already-connected device.
@@ -277,26 +301,26 @@ export function useInnovoPulseOx(
     const discovered = await connected.discoverAllServicesAndCharacteristics();
     deviceRef.current = discovered;
 
-    // Log all discovered services and characteristics
-    try {
-      const services = await discovered.services();
-      console.log('BLE_DISCOVERY: found ' + services.length + ' services');
-      for (const svc of services) {
-        console.log('BLE_DISCOVERY:   service=' + svc.uuid);
-        const chars = await svc.characteristics();
-        for (const ch of chars) {
-          console.log('BLE_DISCOVERY:     char=' + ch.uuid + ' notify=' + ch.isNotifiable + ' indicate=' + ch.isIndicatable + ' read=' + ch.isReadable + ' write=' + ch.isWritableWithResponse);
+    // Enumerate services/characteristics — diagnostics only
+    if (IS_DEV) {
+      try {
+        const services = await discovered.services();
+        debugLog('BLE_DISCOVERY: found ' + services.length + ' services');
+        for (const svc of services) {
+          debugLog('BLE_DISCOVERY:   service=' + svc.uuid);
+          const chars = await svc.characteristics();
+          for (const ch of chars) {
+            debugLog('BLE_DISCOVERY:     char=' + ch.uuid + ' notify=' + ch.isNotifiable + ' indicate=' + ch.isIndicatable);
+          }
         }
+      } catch (discErr: any) {
+        debugLog('BLE_DISCOVERY: enumeration failed: ' + discErr.message);
       }
-    } catch (discErr: any) {
-      console.log('BLE_DISCOVERY: enumeration failed: ' + discErr.message);
     }
 
     // 500ms settling time — some Android BLE stacks need this after
     // service discovery before subscriptions work reliably
-    console.log('BLE_SETTLE: waiting 500ms after discovery...');
     await new Promise(resolve => setTimeout(resolve, 500));
-    console.log('BLE_SETTLE: done');
 
     // Abandon setup if the user disconnected or switched source during the
     // awaits above — otherwise we create subscriptions and an interval that
@@ -311,14 +335,13 @@ export function useInnovoPulseOx(
     lastNotificationAtRef.current = Date.now();
 
     // Single subscription via manager-level API (confirmed working in testing)
-    console.log('BLE_SUBSCRIBE: monitorCharacteristicForDevice(' + discovered.id + ', ' + NORDIC_UART_SERVICE_UUID + ', ' + INNOVO_PPG_CHARACTERISTIC_UUID + ')');
     subscriptionRef.current = manager.monitorCharacteristicForDevice(
       discovered.id,
       NORDIC_UART_SERVICE_UUID,
       INNOVO_PPG_CHARACTERISTIC_UUID,
       (err: any, characteristic: any) => {
         if (err) {
-          console.log('BLE_ERROR: notification error: ' + err.message);
+          debugLog('BLE_ERROR: notification error: ' + err.message);
           return;
         }
         if (!characteristic?.value) return;
@@ -339,29 +362,25 @@ export function useInnovoPulseOx(
       },
       'txn_innovo_ppg',
     );
-    console.log('BLE_MONITOR: FFF1 subscription created');
 
     // Subscribe to FFF0 indications to trigger PPG streaming on FFF1.
     // The device starts sending PPG data when its CCCD descriptor gets
     // the indicate-enable write ([0x02, 0x00] to 0x2902), which
     // monitorCharacteristicForDevice does automatically.
-    console.log('BLE_TRIGGER: subscribing to FFF0 indications to start PPG stream');
     fff0SubRef.current = manager.monitorCharacteristicForDevice(
       discovered.id,
       NORDIC_UART_SERVICE_UUID,
       FFF0_CHARACTERISTIC_UUID,
       (err: any, char: any) => {
         if (err) {
-          console.log('BLE_FFF0_INDICATE: error: ' + err.message);
+          debugLog('BLE_FFF0_INDICATE: error: ' + err.message);
           return;
         }
-        if (char?.value) {
-          console.log('BLE_FFF0_INDICATE:', char.value);
-        }
+        if (char?.value) debugLog('BLE_FFF0_INDICATE:', char.value);
       },
       'txn_fff0_trigger',
     );
-    console.log('BLE_TRIGGER: FFF0 indication subscription created — device should start streaming');
+    console.log('BLE_SUBSCRIBE: FFF1 + FFF0 subscriptions created');
 
     // Unexpected link loss (battery, range): never leave a stale "connected".
     disconnectSubRef.current = connected.onDisconnected((error: any, dev: any) => {
@@ -384,8 +403,9 @@ export function useInnovoPulseOx(
     }, STALL_CHECK_INTERVAL_MS);
 
     setConnectionStatus('connected');
+    setStatusMessage(null);
     setSignalQuality('poor'); // upgrades as data flows
-  }, []);
+  }, [handler, reconnectPolicy]);
 
   /**
    * Schedule an auto-reconnect attempt with exponential backoff.
@@ -411,6 +431,7 @@ export function useInnovoPulseOx(
     }
     deviceRef.current = null;
     handler.current.reset();
+    clearDeviceReadings();
     // Fresh gate too: a stale running median from before the dropout would
     // mis-flag the first beats after reconnect if the rate changed meanwhile.
     qualityGate.current = new QualityGate(deviationTolerance);
@@ -419,10 +440,8 @@ export function useInnovoPulseOx(
     const delay = reconnectPolicy.current.nextDelayMs();
     if (delay === null) {
       console.log('BLE_RECONNECT: giving up after ' + reconnectPolicy.current.attemptCount + ' attempts');
-      activeRef.current = false;
       reconnectPolicy.current.reset();
-      setConnectionStatus('disconnected');
-      setSignalQuality('disconnected');
+      failDisconnected(MSG_LINK_LOST);
       return;
     }
 
@@ -450,7 +469,7 @@ export function useInnovoPulseOx(
         }
       }
     }, delay);
-  }, [setupConnectedDevice, wireHandler]);
+  }, [setupConnectedDevice, wireHandler, clearDeviceReadings, failDisconnected, deviationTolerance, handler, qualityGate, reconnectPolicy]);
   scheduleReconnectRef.current = scheduleReconnect;
 
   const connect = useCallback(async (_deviceId?: string) => {
@@ -460,23 +479,32 @@ export function useInnovoPulseOx(
     const manager = getManager();
     if (!manager) {
       console.warn('BLE_CONNECT_BLOCKED: native module not available');
-      Alert.alert(
-        'Bluetooth Not Available',
-        bleLoadError || 'The Bluetooth module failed to load. BLE features require a dev build (not Expo Go).',
-      );
+      setStatusMessage(MSG_NO_MODULE);
+      // Alert once — this runs on every source change while a BLE source is
+      // selected, and a dialog per switch made PPG-validation mode unusable.
+      if (!unavailableAlertShownRef.current) {
+        unavailableAlertShownRef.current = true;
+        Alert.alert(
+          'Bluetooth Not Available',
+          bleLoadError || 'The Bluetooth module failed to load. BLE features require a development build (not Expo Go).',
+        );
+      }
       return;
     }
 
-    // Request runtime permissions (Android)
     // Claim the slot BEFORE any await. Setting this after the permission
     // await left a window where two rapid source switches both passed the
     // guard, started two scans, and orphaned the first scan timeout — which
     // later fired and marked a live streaming connection "disconnected".
     activeRef.current = true;
+    setStatusMessage(null);
+    setConnectionStatus('connecting');
 
-    const permitted = await requestBLEPermissions();
-    if (!permitted) {
-      activeRef.current = false;
+    const permissionProblem = await requestBLEPermissions();
+    // disconnect() may have run while the system dialog was open.
+    if (!activeRef.current) return;
+    if (permissionProblem) {
+      failDisconnected(permissionProblem);
       return;
     }
 
@@ -484,42 +512,38 @@ export function useInnovoPulseOx(
     qualityGate.current = new QualityGate(deviationTolerance);
     reconnectPolicy.current.reset();
     wireHandler();
+    clearDeviceReadings();
 
-    setConnectionStatus('scanning');
-    setScanning(true);
-    setSpo2(null);
-    setDeviceBPM(null);
-    setPerfusionIndex(null);
-
-    // Wait for BLE to be powered on (Android needs this)
-    const state = await manager.state();
-    console.log('BLE_STATE: adapter=' + state);
+    // Bluetooth must be on. Do not wait indefinitely for it (that pinned the
+    // header at "Scanning..." forever with no hint); on Android ask the
+    // adapter to enable, then either proceed or explain.
+    let state: string = 'Unknown';
+    try {
+      state = await manager.state();
+    } catch (e: any) {
+      debugLog('BLE_STATE: state() failed: ' + (e?.message || e));
+    }
+    if (!activeRef.current) return;
+    debugLog('BLE_STATE: adapter=' + state);
     if (state !== 'PoweredOn') {
-      console.log('BLE_STATE: waiting for PoweredOn...');
-      // Track the subscription so disconnect()/unmount can cancel the wait.
-      // Previously it was unreachable, so with Bluetooth off the hook pinned
-      // at scanning with activeRef stuck true and leaked one native listener
-      // per attempt — all of which fired at once when BT was finally enabled.
-      const poweredOn = await new Promise<boolean>((resolve) => {
-        stateSubRef.current = manager.onStateChange((newState: string) => {
-          console.log('BLE_STATE: changed to ' + newState);
-          if (newState === 'PoweredOn') {
-            stateSubRef.current?.remove();
-            stateSubRef.current = null;
-            resolve(true);
-          }
-        }, true);
-        bluetoothWaitResolveRef.current = () => resolve(false);
-      });
-      if (!poweredOn || !activeRef.current) {
-        console.log('BLE_STATE: wait cancelled');
-        activeRef.current = false;
-        setConnectionStatus('disconnected');
-        setScanning(false);
+      let poweredOn = false;
+      if (Platform.OS === 'android' && typeof manager.enable === 'function') {
+        try {
+          await manager.enable();
+          poweredOn = (await manager.state()) === 'PoweredOn';
+        } catch (e: any) {
+          debugLog('BLE_STATE: enable() failed: ' + (e?.message || e));
+        }
+      }
+      if (!activeRef.current) return;
+      if (!poweredOn) {
+        failDisconnected(state === 'Unauthorized' ? MSG_BLUETOOTH_UNAUTHORIZED : MSG_BLUETOOTH_OFF);
         return;
       }
     }
 
+    setConnectionStatus('scanning');
+    setScanning(true);
     console.log('BLE_SCAN: starting for service ' + NORDIC_UART_SERVICE_UUID);
 
     manager.startDeviceScan(
@@ -532,26 +556,21 @@ export function useInnovoPulseOx(
             clearTimeout(scanTimeoutRef.current);
             scanTimeoutRef.current = null;
           }
-          setConnectionStatus('disconnected');
-          setScanning(false);
-          activeRef.current = false;
+          failDisconnected('Bluetooth scan failed (' + error.message + '). Tap to scan again.');
           return;
         }
         if (!device) return;
 
-        console.log('BLE_SCAN: found device=' + (device.name || device.localName || '(unnamed)') + ' id=' + device.id);
+        debugLog('BLE_SCAN: found device=' + (device.name || device.localName || '(unnamed)') + ' id=' + device.id);
 
         // Match by name or by specific deviceId
         const nameMatch = device.name?.includes(INNOVO_DEVICE_NAME)
           || device.localName?.includes(INNOVO_DEVICE_NAME);
         if (_deviceId && device.id !== _deviceId) return;
-        if (!_deviceId && !nameMatch) {
-          console.log('BLE_SCAN: skipping — name does not match ' + INNOVO_DEVICE_NAME);
-          return;
-        }
+        if (!_deviceId && !nameMatch) return;
 
         // Found the device — stop scanning and connect
-        console.log('BLE_SCAN: matched! stopping scan');
+        console.log('BLE_SCAN: matched ' + device.id + ' — stopping scan');
         if (scanTimeoutRef.current) {
           clearTimeout(scanTimeoutRef.current);
           scanTimeoutRef.current = null;
@@ -561,7 +580,6 @@ export function useInnovoPulseOx(
         setConnectionStatus('connecting');
 
         try {
-          console.log('BLE_CONNECT: connecting to ' + device.id);
           const connected = await device.connect({ timeout: 10000 });
           await setupConnectedDevice(manager, connected);
         } catch (err: any) {
@@ -571,8 +589,7 @@ export function useInnovoPulseOx(
           // this teardown the link stayed open and streaming while the UI said
           // "disconnected", and the next connect() opened a second one.
           teardownConnection();
-          setConnectionStatus('disconnected');
-          activeRef.current = false;
+          failDisconnected(`Could not connect to the ${INNOVO_DISPLAY_NAME}. Tap to scan again.`);
         }
       },
     );
@@ -584,18 +601,19 @@ export function useInnovoPulseOx(
       scanTimeoutRef.current = null;
       console.log('BLE_SCAN: no matching device after ' + SCAN_TIMEOUT_MS + 'ms — stopping scan');
       manager.stopDeviceScan();
-      setScanning(false);
-      setConnectionStatus('disconnected');
-      activeRef.current = false;
+      failDisconnected(MSG_NOT_FOUND);
     }, SCAN_TIMEOUT_MS);
-  }, [wireHandler, setupConnectedDevice, teardownConnection]);
+  }, [wireHandler, setupConnectedDevice, teardownConnection, clearDeviceReadings, failDisconnected, deviationTolerance, handler, qualityGate, reconnectPolicy]);
 
   const disconnect = useCallback(() => {
     activeRef.current = false;
     clearTimers();
-    const manager = getManager();
-    if (manager) {
-      manager.stopDeviceScan();
+    // Use the manager only if one already exists. Constructing it here
+    // (getManager) instantiated CBCentralManager on iOS at first mount — even
+    // in Simulated mode — which popped the Bluetooth permission dialog on top
+    // of the onboarding intro.
+    if (sharedManager) {
+      try { sharedManager.stopDeviceScan(); } catch { /* not scanning */ }
     }
     setScanning(false);
 
@@ -604,13 +622,12 @@ export function useInnovoPulseOx(
     handler.current.reset();
     reconnectPolicy.current.reset();
     setConnectionStatus('disconnected');
+    setStatusMessage(null);
     setLatestPPI(null);
     setLatestBeat(null);
     setSignalQuality('disconnected');
-    setSpo2(null);
-    setDeviceBPM(null);
-    setPerfusionIndex(null);
-  }, [clearTimers, teardownConnection]);
+    clearDeviceReadings();
+  }, [clearTimers, teardownConnection, clearDeviceReadings, handler, reconnectPolicy]);
 
   // Clean up on unmount
   useEffect(() => {
@@ -621,7 +638,7 @@ export function useInnovoPulseOx(
     };
   }, [clearTimers, teardownConnection]);
 
-  return {
+  return useMemo(() => ({
     devices: [],
     connect,
     disconnect,
@@ -629,13 +646,17 @@ export function useInnovoPulseOx(
     latestPPI,
     latestBeat,
     signalQuality,
-    sourceName: 'Innovo iP900BPB',
+    sourceName: INNOVO_DISPLAY_NAME,
+    statusMessage,
     spo2,
     perfusionIndex,
     deviceBPM,
     scanning,
     bleUnavailableReason: BleManagerClass ? null : (bleLoadError || 'BLE module not loaded'),
-  };
+  }), [
+    connect, disconnect, connectionStatus, latestPPI, latestBeat, signalQuality,
+    statusMessage, spo2, perfusionIndex, deviceBPM, scanning,
+  ]);
 }
 
 /** Decode base64 string (from BLE-PLX) to Uint8Array. */

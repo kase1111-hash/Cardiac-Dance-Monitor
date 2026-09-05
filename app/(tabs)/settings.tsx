@@ -1,36 +1,53 @@
 /**
  * Settings tab — data source, baseline management, export, about.
  *
- * Hidden dev features:
- * - Long-press "About" → toggle PPG validation mode
+ * Hidden dev features: long-press "About" (3 s) reveals the Developer
+ * section (PPG validation mode, Establish Baseline Now, Chest mode on the
+ * Monitor header).
  */
-import React, { useState, useCallback } from 'react';
+import React, { useCallback } from 'react';
 import {
-  View, Text, StyleSheet, SafeAreaView, TouchableOpacity, ScrollView,
-  Alert, Platform,
+  View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Slider from '@react-native-community/slider';
-import { useDataSource } from '../../src/context/data-source-context';
+import { useDataSource, type DataSourceType } from '../../src/context/data-source-context';
 import { sessionStore } from '../../src/session/session-store-instance';
 import { shareAsRawCSV } from '../../src/session/share-session';
+import { exportBeatCSV } from '../../src/session/export-beat-csv';
+import { beatLogger } from '../../src/session/beat-logger';
+import { BASELINE_MIN_BEATS } from '../../shared/constants';
+import { FORCE_ESTABLISH_MIN_SAMPLES } from '../../src/baseline/baseline-service';
 import type { RhythmScenario } from '../../shared/simulator';
 
-const SCENARIOS: Array<{ id: RhythmScenario; label: string; description: string }> = [
-  { id: 'nsr', label: 'Normal (Waltz)', description: 'Regular rhythm with moderate variability' },
+const SCENARIOS: { id: RhythmScenario; label: string; description: string }[] = [
+  { id: 'nsr', label: 'Waltz', description: 'Regular rhythm with gentle breathing variability' },
   { id: 'chf', label: 'Lock-Step', description: 'Very regular, metronomic rhythm' },
   { id: 'af', label: 'Mosh Pit', description: 'Highly irregular rhythm' },
   { id: 'pvc', label: 'Stumble', description: 'Regular with occasional premature beats' },
-  { id: 'transition', label: 'Transition', description: 'Normal → irregular after 100 beats' },
+  {
+    id: 'transition', label: 'Transition',
+    description: 'Waltz, then Mosh Pit after 100 beats. The label passes through in-between dances for ~40 s while the 60-beat window turns over.',
+  },
+];
+
+const SOURCES: { id: DataSourceType; label: string }[] = [
+  { id: 'simulated', label: 'Simulated' },
+  { id: 'ble_innovo', label: 'Innovo' },
+  { id: 'camera', label: 'Camera' },
 ];
 
 export default function SettingsScreen() {
-  const { sourceType, setSourceType, simulatedScenario, setSimulatedScenario, filterSensitivity, setFilterSensitivity, requestBaselineReset, requestForceBaseline, ppgValidationMode, setPPGValidationMode, requestReplayOnboarding } = useDataSource();
-  const [devMode, setDevMode] = useState(false);
+  const {
+    sourceType, setSourceType, simulatedScenario, setSimulatedScenario,
+    filterSensitivity, setFilterSensitivity, requestBaselineReset, requestForceBaseline,
+    ppgValidationMode, setPPGValidationMode, requestReplayOnboarding, devMode, setDevMode,
+  } = useDataSource();
 
   const handleResetBaseline = useCallback(() => {
     Alert.alert(
       'Reset Baseline',
-      'This will clear your learned rhythm baseline. The system will need to re-learn your pattern. Continue?',
+      'This will clear your learned rhythm baseline for the current source. The system will need to re-learn your pattern. Continue?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -43,87 +60,61 @@ export default function SettingsScreen() {
         },
       ],
     );
-  }, []);
+  }, [requestBaselineReset]);
 
   const handleExportRawData = useCallback(async () => {
     try {
       const sessions = await sessionStore.getSessions();
       if (sessions.length === 0) {
-        Alert.alert('No Sessions', 'Record a session first by connecting a data source on the Monitor tab.');
+        Alert.alert('No Sessions', 'Record a session first on the Monitor tab. It appears here once you leave the Monitor tab or background the app.');
         return;
       }
-      const latest = sessions[0];
-      if (!latest.rawBeats || latest.rawBeats.length === 0) {
-        Alert.alert('No Raw Data', 'The most recent session has no per-beat data. Raw data recording requires a newer session.');
+      const latest = await sessionStore.getSession(sessions[0].id);
+      if (!latest || !latest.rawBeats || latest.rawBeats.length === 0) {
+        Alert.alert('No Raw Data', 'The most recent session has no per-beat data yet.');
         return;
       }
       await shareAsRawCSV(latest);
     } catch (e: any) {
-      Alert.alert('Export Error', e.message ?? 'Unknown error');
+      Alert.alert('Export Error', e?.message ?? 'Sharing is not available in this build.');
     }
   }, []);
 
   const handleAboutLongPress = useCallback(() => {
-    setDevMode(prev => !prev);
-  }, []);
+    setDevMode(!devMode);
+  }, [devMode, setDevMode]);
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
         <Text style={styles.title}>Settings</Text>
 
         {/* Data source toggle */}
         <Text style={styles.sectionHeader}>Data Source</Text>
         <View style={styles.toggleRow}>
-          <TouchableOpacity
-            style={[styles.toggleBtn, sourceType === 'simulated' && styles.toggleActive]}
-            onPress={() => setSourceType('simulated')}
-          >
-            <Text style={[styles.toggleText, sourceType === 'simulated' && styles.toggleTextActive]}>
-              Simulated
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.toggleBtn, sourceType === 'ble' && styles.toggleActive]}
-            onPress={() => setSourceType('ble')}
-          >
-            <Text style={[styles.toggleText, sourceType === 'ble' && styles.toggleTextActive]}>
-              Pulse Sensor
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.toggleBtn, sourceType === 'ble_innovo' && styles.toggleActive]}
-            onPress={() => setSourceType('ble_innovo')}
-          >
-            <Text style={[styles.toggleText, sourceType === 'ble_innovo' && styles.toggleTextActive]}>
-              Innovo
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.toggleBtn, sourceType === 'camera' && styles.toggleActive]}
-            onPress={() => setSourceType('camera')}
-          >
-            <Text style={[styles.toggleText, sourceType === 'camera' && styles.toggleTextActive]}>
-              Camera
-            </Text>
-          </TouchableOpacity>
+          {SOURCES.map(s => (
+            <TouchableOpacity
+              key={s.id}
+              style={[styles.toggleBtn, sourceType === s.id && styles.toggleActive]}
+              onPress={() => setSourceType(s.id)}
+            >
+              <Text
+                style={[styles.toggleText, sourceType === s.id && styles.toggleTextActive]}
+                numberOfLines={1}
+              >
+                {s.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
-
-        {sourceType === 'ble' && (
-          <View style={styles.infoBox}>
-            <Text style={styles.infoText}>
-              Connect a Bluetooth pulse sensor that supports Heart Rate Service (0x180D).
-              The app will automatically scan for nearby devices.
-            </Text>
-          </View>
-        )}
 
         {sourceType === 'ble_innovo' && (
           <View style={styles.infoBox}>
             <Text style={styles.infoText}>
-              Scanning for Innovo iP900BPB pulse oximeter via Bluetooth.
-              Turn on the device and place your finger in the sensor.
-              Provides raw PPG waveform + SpO2 + BPM.
+              Scans for an Innovo iP900BP-B pulse oximeter over Bluetooth.
+              Turn the device on and insert a finger before selecting it —
+              the scan gives up after 30 seconds (tap the header on the Monitor
+              tab to scan again). Provides the raw pulse waveform plus SpO₂ and BPM.
             </Text>
           </View>
         )}
@@ -131,8 +122,9 @@ export default function SettingsScreen() {
         {sourceType === 'camera' && (
           <View style={styles.infoBox}>
             <Text style={styles.infoText}>
-              Place your fingertip over the rear camera lens. The flash will turn on
-              to detect your pulse. Hold still for at least 30 seconds.
+              Cover the rear camera lens and flash completely with a fingertip.
+              Beats start after about five detected pulses; keep the finger
+              still. Needs a development or preview build (not Expo Go).
             </Text>
           </View>
         )}
@@ -140,7 +132,7 @@ export default function SettingsScreen() {
         {/* Scenario picker (only when simulated) */}
         {sourceType === 'simulated' && (
           <>
-            <Text style={styles.sectionHeader}>Simulation Scenario</Text>
+            <Text style={styles.sectionHeader}>Simulated Rhythm</Text>
             {SCENARIOS.map(s => (
               <TouchableOpacity
                 key={s.id}
@@ -153,6 +145,11 @@ export default function SettingsScreen() {
                 <Text style={styles.scenarioDesc}>{s.description}</Text>
               </TouchableOpacity>
             ))}
+            <Text style={styles.hint}>
+              Switching rhythms while the baseline is still learning restarts
+              learning on the new rhythm. An established baseline is kept, so
+              switching is how you show change detection.
+            </Text>
           </>
         )}
 
@@ -161,9 +158,13 @@ export default function SettingsScreen() {
         <TouchableOpacity style={styles.actionRow} onPress={handleResetBaseline}>
           <Text style={styles.actionLabel}>Reset Baseline</Text>
           <Text style={styles.actionDesc}>
-            Clear learned rhythm pattern and start fresh
+            Clear the learned rhythm pattern for the current source and start fresh
           </Text>
         </TouchableOpacity>
+        <Text style={styles.hint}>
+          Simulated rhythms and real sensors keep separate baselines, so
+          switching source never discards one.
+        </Text>
 
         {/* Signal quality tolerance slider */}
         <Text style={styles.sectionHeader}>Signal Quality Tolerance</Text>
@@ -200,21 +201,39 @@ export default function SettingsScreen() {
 
         {/* Export */}
         <Text style={styles.sectionHeader}>Export</Text>
-        <Text style={styles.infoText}>
-          Export the live beat log from the Monitor tab (Export CSV button),
-          or use Export Raw Data below for the most recent recorded session.
-        </Text>
-        <TouchableOpacity style={[styles.actionRow, { marginTop: 8 }]} onPress={handleExportRawData}>
-          <Text style={styles.actionLabel}>Export Raw Data</Text>
+        <TouchableOpacity style={styles.actionRow} onPress={() => { void exportBeatCSV(); }}>
+          <Text style={styles.actionLabel}>Export live beat log (CSV)</Text>
           <Text style={styles.actionDesc}>
-            Per-beat CSV with PPI, SpO2, dance metrics, and baseline distance (most recent session)
+            Every beat since the source was last started — {beatLogger.count} beats so far
           </Text>
         </TouchableOpacity>
+        <TouchableOpacity style={styles.actionRow} onPress={handleExportRawData}>
+          <Text style={styles.actionLabel}>Export Raw Data</Text>
+          <Text style={styles.actionDesc}>
+            Per-beat CSV with PPI, SpO₂, dance metrics, and baseline distance (most recent session)
+          </Text>
+        </TouchableOpacity>
+        <Text style={styles.hint}>
+          Sessions are also exportable individually from the History tab (CSV, PDF, raw beats).
+        </Text>
 
         {/* Dev mode features (hidden) */}
         {devMode && (
           <>
             <Text style={[styles.sectionHeader, { color: '#a855f7' }]}>Developer</Text>
+            <TouchableOpacity
+              style={styles.actionRow}
+              onPress={() => requestForceBaseline()}
+            >
+              <Text style={styles.actionLabel}>Establish Baseline Now</Text>
+              <Text style={styles.actionDesc}>
+                Skip the 5-minute learning period and freeze the baseline from the data
+                collected so far. Needs {BASELINE_MIN_BEATS} beats and {FORCE_ESTABLISH_MIN_SAMPLES} rhythm
+                windows (about 3 minutes at 75 BPM); the result is confirmed in a dialog.
+                For demos: establish during the Waltz, then switch the rhythm to Mosh Pit
+                and watch “Has it changed?” go amber (~30 s) and then red with a banner (~90 s).
+              </Text>
+            </TouchableOpacity>
             <TouchableOpacity
               style={[styles.actionRow, ppgValidationMode && styles.actionRowActive]}
               onPress={() => setPPGValidationMode(!ppgValidationMode)}
@@ -227,23 +246,9 @@ export default function SettingsScreen() {
                 rolling BPM live. Requires a dev build with both modules.
               </Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.actionRow}
-              onPress={() => {
-                requestForceBaseline();
-                Alert.alert(
-                  'Baseline Requested',
-                  'The baseline will be frozen from the data collected so far, skipping the 5-minute requirement. Check the Monitor tab — if at least ~20 beats were recorded, change detection is now active.',
-                );
-              }}
-            >
-              <Text style={styles.actionLabel}>Establish Baseline Now</Text>
-              <Text style={styles.actionDesc}>
-                Skip the 5-minute learning period and freeze the baseline from current data.
-                Needs at least ~20 beats on the Monitor tab. For demos: establish during a
-                normal rhythm, then switch scenarios to watch change detection fire.
-              </Text>
-            </TouchableOpacity>
+            <Text style={styles.hint}>
+              Developer mode also shows the “Chest” breathing-rate toggle in the Monitor header.
+            </Text>
           </>
         )}
 
@@ -268,7 +273,9 @@ export default function SettingsScreen() {
           <Text style={styles.aboutText}>
             Cardiac Dance Monitor v1.0.0{'\n'}
             Research prototype — not a medical device.{'\n'}
-            Validated on 9,917 records across 6 databases.
+            The method was validated retrospectively on 9,917 ECG records
+            across 6 databases. Pulse-derived (PPG) intervals are not yet
+            formally validated.
             {devMode ? '\n\nDeveloper mode enabled.' : ''}
           </Text>
         </TouchableOpacity>
@@ -316,6 +323,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#1a1a2e',
     alignItems: 'center',
+    justifyContent: 'center',
   },
   toggleActive: {
     borderColor: '#22c55e',
@@ -338,9 +346,15 @@ const styles = StyleSheet.create({
     borderColor: '#1a1a2e',
   },
   infoText: {
-    color: '#64748b',
+    color: '#94a3b8',
     fontSize: 12,
     lineHeight: 18,
+  },
+  hint: {
+    color: '#64748b',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 4,
   },
   scenarioRow: {
     paddingVertical: 12,
@@ -367,6 +381,7 @@ const styles = StyleSheet.create({
     color: '#64748b',
     fontSize: 12,
     marginTop: 2,
+    lineHeight: 16,
   },
   actionRow: {
     paddingVertical: 12,
@@ -390,6 +405,7 @@ const styles = StyleSheet.create({
     color: '#64748b',
     fontSize: 12,
     marginTop: 2,
+    lineHeight: 16,
   },
   aboutText: {
     color: '#64748b',
@@ -420,7 +436,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   sliderDesc: {
-    color: '#475569',
+    color: '#64748b',
     fontSize: 11,
     lineHeight: 16,
     marginTop: 4,

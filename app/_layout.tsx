@@ -1,63 +1,24 @@
-// DIAGNOSTIC BUILD — all require() to guarantee execution order
-// (ES import statements get hoisted, defeating sequential logging)
-console.log('APP_BOOT: _layout.tsx executing');
+/**
+ * Root layout — wraps every screen in the data-source context and a dark
+ * native stack. Screens live under app/(tabs) and app/session.
+ */
+import React from 'react';
+import { Stack } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
+import { DataSourceProvider } from '../src/context/data-source-context';
 
-// === Probe remaining native modules (BLE, VisionCamera, worklets-core removed from build) ===
-console.log('APP_BOOT: testing react-native-reanimated...');
-try {
-  require('react-native-reanimated');
-  console.log('APP_BOOT: REANIMATED OK');
-} catch (e: any) {
-  console.log('APP_BOOT: REANIMATED FAILED: ' + e.message);
-}
+// Re-export expo-router's error boundary so a render-time exception on any
+// screen shows a retry screen instead of closing the app.
+export { ErrorBoundary } from 'expo-router';
 
-console.log('APP_BOOT: testing react-native-screens...');
-try {
-  require('react-native-screens');
-  console.log('APP_BOOT: SCREENS OK');
-} catch (e: any) {
-  console.log('APP_BOOT: SCREENS FAILED: ' + e.message);
-}
-
-console.log('APP_BOOT: testing react-native-gesture-handler...');
-try {
-  require('react-native-gesture-handler');
-  console.log('APP_BOOT: GESTURE OK');
-} catch (e: any) {
-  console.log('APP_BOOT: GESTURE FAILED: ' + e.message);
-}
-
-console.log('APP_BOOT: testing react-native-svg...');
-try {
-  require('react-native-svg');
-  console.log('APP_BOOT: SVG OK');
-} catch (e: any) {
-  console.log('APP_BOOT: SVG FAILED: ' + e.message);
-}
-
-console.log('APP_BOOT: all native module probes complete');
-
-// === Load app dependencies via require() to maintain order ===
-console.log('APP_BOOT: loading React...');
-const React = require('react');
-console.log('APP_BOOT: React loaded');
-
-console.log('APP_BOOT: loading expo-router...');
-const { Stack } = require('expo-router');
-console.log('APP_BOOT: expo-router loaded');
-
-console.log('APP_BOOT: loading expo-status-bar...');
-const { StatusBar } = require('expo-status-bar');
-console.log('APP_BOOT: expo-status-bar loaded');
-
-console.log('APP_BOOT: loading DataSourceProvider...');
-const { DataSourceProvider } = require('../src/context/data-source-context');
-console.log('APP_BOOT: DataSourceProvider loaded');
-
-console.log('APP_BOOT: defining RootLayout');
+// A cold deep link (e.g. /session/<id>) builds a stack containing only that
+// screen, so "back" had nowhere to go. Anchoring the tabs as the initial
+// route makes back always land on the app.
+export const unstable_settings = {
+  initialRouteName: '(tabs)',
+};
 
 export default function RootLayout() {
-  console.log('APP_BOOT: RootLayout rendering');
   return (
     <DataSourceProvider>
       <StatusBar style="light" />

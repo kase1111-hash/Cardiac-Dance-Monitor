@@ -1,6 +1,6 @@
 /**
- * Metrics row — four compact metric displays: BPM, κ, Gini, σ.
- * Per SPEC Section 4.1.
+ * Metrics row — four compact metric displays: BPM, κ, Gini, and the shift
+ * from baseline (Mahalanobis distance, in σ). Per SPEC Section 4.1.
  */
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
@@ -9,10 +9,11 @@ interface Props {
   bpm: number;
   kappa: number;
   gini: number;
-  sigma: number | null;
+  /** Mahalanobis distance from the personal baseline, or null while learning. */
+  distance: number | null;
 }
 
-export function MetricsRow({ bpm, kappa, gini, sigma }: Props) {
+function MetricsRowComponent({ bpm, kappa, gini, distance }: Props) {
   return (
     <View style={styles.row}>
       {/* Greek labels must be JSX expressions, not attribute string literals:
@@ -20,12 +21,17 @@ export function MetricsRow({ bpm, kappa, gini, sigma }: Props) {
           the previous attribute form rendered the raw escape text on screen.
           Inside braces these are ordinary JS string literals and resolve. */}
       <MetricCell label="BPM" value={bpm > 0 ? String(bpm) : '--'} />
-      <MetricCell label={'\u03BA'} value={kappa > 0 ? kappa.toFixed(1) : '--'} />
+      <MetricCell label={'κ'} value={kappa > 0 ? kappa.toFixed(1) : '--'} />
       <MetricCell label="Gini" value={gini > 0 ? gini.toFixed(3) : '--'} />
-      <MetricCell label={'\u03C3'} value={sigma !== null ? sigma.toFixed(1) : '\u2014'} />
+      <MetricCell
+        label={'shift (σ)'}
+        value={distance !== null && Number.isFinite(distance) ? distance.toFixed(1) : '--'}
+      />
     </View>
   );
 }
+
+export const MetricsRow = React.memo(MetricsRowComponent);
 
 function MetricCell({ label, value }: { label: string; value: string }) {
   return (

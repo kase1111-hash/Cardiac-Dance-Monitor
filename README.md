@@ -46,12 +46,14 @@ From Paper IV of the Cardiac Torus series, validated on 300 classified recording
 |--------|--------------|
 | **Onboarding** | First-run walkthrough of what the torus means (replayable from Settings → Help) |
 | **Monitor** | Live torus trajectory, BPM/SpO₂, dance card, and a **rate-vs-geometry strip** showing how heart rate can stay flat while the rhythm's geometry transforms |
-| **History** | Auto-recorded sessions; tap for detail (transitions, change events) and export as CSV / PDF / raw per-beat CSV |
-| **Settings** | Pick a data source (simulated, BLE, Innovo, camera), tune the quality gate, reset/establish baseline, replay the intro, and hidden dev tools |
+| **History** | Auto-recorded sessions (the current one is saved the moment you leave the Monitor tab); tap for detail (transitions, change events) and export as CSV / PDF / raw per-beat CSV |
+| **Settings** | Pick a data source (simulated, Innovo, camera), choose the simulated rhythm, tune the quality indicator, reset the baseline, export the live beat log, replay the intro. Long-press **About** (3 s) for the Developer section: PPG validation mode, Establish Baseline Now, and the chest breathing-rate toggle |
 
-**Three data sources:** simulated rhythms (works in Expo Go), a BLE pulse
-oximeter (Innovo iP900BP-B), or the phone's rear camera as a PPG sensor. The
-baseline and session history persist across restarts via AsyncStorage.
+**Three data sources:** simulated rhythms, an Innovo iP900BP-B Bluetooth
+pulse oximeter, or the phone's rear camera as a PPG sensor. Simulated mode
+runs on any build; the two sensors need a development or preview build (see
+[BUILD.md](BUILD.md)). The baseline and session history persist across
+restarts via AsyncStorage; simulated and sensor baselines are kept separately.
 
 ---
 
@@ -64,14 +66,14 @@ Pair a Bluetooth pulse oximeter with the phone app. Or use the phone camera as a
 ```
 ┌──────────────┐      BLE       ┌──────────────┐
 │  Pulse Ox     │──────────────▶│  Phone App    │
-│  CMS50D-BT   │  HR + PPI     │  Torus + Dance│
+│  iP900BP-B   │  PPG + SpO₂   │  Torus + Dance│
 │  ~$15-40      │               │  + Baseline   │
 └──────────────┘               └──────────────┘
 ```
 
-### Tier 2: Hard Mod — ESP32 + OLED ($20–$60)
+### Tier 2: Hard Mod — ESP32 + OLED ($20–$60) — vision, not in this repo
 
-A standalone device that intercepts the BLE stream, computes the torus, and drives a dedicated display. No phone required after initial setup.
+A standalone device that intercepts the BLE stream, computes the torus, and drives a dedicated display. No phone required after initial setup. (The CMS50D-BT in this diagram is part of the Tier 2 vision; the phone app supports the Innovo iP900BP-B.)
 
 ```
 ┌──────────────┐      BLE       ┌──────────────────────────┐
@@ -155,30 +157,23 @@ git clone https://github.com/kase1111-hash/cardiac-dance-monitor.git
 cd cardiac-dance-monitor
 
 npm install
-npx expo start        # Expo Go — SIMULATED rhythms only
-```
-
-**To use real hardware** (camera PPG, BLE pulse oximeter, chest
-accelerometer) you need a development or preview build — those are native
-modules that Expo Go can't load. See **[BUILD.md](BUILD.md)** for the
-one-command EAS build and a demo script. In short:
-
-```bash
+npm test              # 400+ Jest tests, no device needed
 eas build --profile preview --platform android   # self-contained demo APK
 ```
 
-Pair a BLE pulse oximeter, or use the camera PPG mode for a spot check.
+The preview APK is the demo path: it bundles the JS plus the camera and
+Bluetooth native modules, so every mode works with no laptop attached. See
+**[BUILD.md](BUILD.md)** for the one-time EAS setup, the developer build, and
+a timed demo script.
+
+`npx expo start` with Expo Go is a developer convenience for the simulated
+mode only, and the Expo Go in the app stores no longer runs this project's
+SDK 52 — use the SDK 52 build from https://expo.dev/go if you need it.
 
 ### Tier 2: ESP32 Hard Mod
 
-```bash
-cd cardiac-dance-monitor/firmware
-
-# Using PlatformIO
-pio run -t upload
-
-# Or Arduino IDE: open firmware.ino, select ESP32-S3 board, upload
-```
+The Tier 2 firmware is future work and is **not in this repository**. The
+wiring and bill of materials below describe the intended hardware.
 
 **Wiring:**
 
@@ -196,6 +191,10 @@ pio run -t upload
 This repository is the **Tier 1 phone app**. (Tier 2 firmware and Tier 3
 hardware are described above as the project vision; they are not in this repo.)
 
+Useful commands: `npm test` (Jest), `npm run lint` (ESLint via
+`eslint-config-expo`), `npm run replay path/to/beats.csv` (replay an
+exported beat log through the real pipeline offline).
+
 ```
 cardiac-dance-monitor/
 ├── app/                          # Expo Router screens
@@ -204,33 +203,45 @@ cardiac-dance-monitor/
 │   │   ├── history.tsx           # Session list (tap → detail)
 │   │   └── settings.tsx          # Data source, baseline, export, dev tools
 │   ├── session/[id].tsx          # Session detail + CSV/PDF/raw export
-│   └── _layout.tsx
+│   ├── +not-found.tsx            # Fallback for unknown routes
+│   ├── index.tsx                 # Redirects to the Monitor tab
+│   └── _layout.tsx               # Root stack + error boundary
+│
+├── assets/                       # App icon, adaptive icon, splash image
 │
 ├── shared/                       # Platform-agnostic core (pure TS, tested)
 │   ├── torus-engine.ts           # Angle mapping, Menger curvature, Gini
 │   ├── dance-matcher.ts          # Nearest-centroid dance identification
 │   ├── quality-gate.ts           # PPI range + deviation filtering
+│   ├── signal-watchdog.ts        # Dropout-gap detection
 │   ├── constants.ts              # Empirical centroids, PPI bounds, thresholds
+│   ├── dance-colors.ts, types.ts # Dance palette/emoji, shared types
 │   └── simulator.ts              # Rhythm simulator (NSR, CHF, AF, PVC, transition)
 │
 ├── src/                          # App-specific code
+│   ├── alerts/                   # Notice/alert escalation + 30-min suppression
 │   ├── ble/                      # BLE + Innovo Nordic UART protocol
 │   ├── camera/                   # Camera PPG: Butterworth, peak detect, processor
 │   ├── baseline/                 # Baseline learning + change detector (Mahalanobis)
+│   ├── dance/                    # Dance transition tracker (hysteresis)
+│   ├── pipeline/                 # PipelineCore: the React-free monitor pipeline
+│   ├── replay/                   # Offline replay of exported beat CSVs
 │   ├── hooks/                    # Data-source + monitor-pipeline + onboarding hooks
 │   ├── display/                  # Torus, dance card, comparison strip, onboarding
 │   ├── session/                  # Recording, CSV export, session store, sharing
 │   ├── sensors/                  # Chest accelerometer for respiratory rate
 │   └── context/                  # Data-source selection state
 │
-├── plugins/                      # Expo config plugins (Kotlin version fix)
-├── BUILD.md                      # EAS dev/preview build guide
+├── scripts/replay-session.ts     # CLI for the offline replay (npm run replay)
+├── plugins/                      # Expo config plugins (Kotlin version guard)
+├── BUILD.md                      # EAS build guide + timed demo script
 └── CLAUDE.md                     # Architecture notes for contributors
 ```
 
 Core math lives in `shared/` with no React or native dependencies, so it runs
-under Jest directly (`npm test` — 299 tests across torus math, dance matching,
-baseline, change detection, PPG pipeline, and the app-startup safety net).
+under Jest directly (`npm test` — 416 tests across torus math, dance
+matching, baseline, change detection, PPG pipeline, storage, and the
+app-startup safety net).
 
 ---
 
@@ -299,7 +310,7 @@ PPG-derived pulse intervals (PPI) are not identical to ECG-derived RR intervals.
 
 | Component | Example | Cost |
 |-----------|---------|------|
-| BLE Pulse Oximeter | CMS50D-BT / BerryMed BM1000C | $15–40 |
+| BLE Pulse Oximeter | CMS50D-BT / BerryMed BM1000C (Tier 2 vision; the phone app supports the Innovo iP900BP-B) | $15–40 |
 | ESP32-S3 module | Seeed XIAO ESP32-S3 | $3–5 |
 | SSD1306 OLED 0.96" | 128×64, I²C, white | $2–4 |
 | LiPo battery | 500 mAh, 3.7V, JST | $2–3 |

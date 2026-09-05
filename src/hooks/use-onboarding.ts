@@ -13,15 +13,18 @@ export function useOnboarding() {
 
   useEffect(() => {
     let cancelled = false;
-    appStorage.getItem(ONBOARDING_KEY).then(v => {
-      if (!cancelled) setSeen(v === 'true');
-    });
+    appStorage.getItem(ONBOARDING_KEY)
+      .then(v => { if (!cancelled) setSeen(v === 'true'); })
+      // Unreadable storage: show the intro rather than never resolving.
+      .catch(() => { if (!cancelled) setSeen(false); });
     return () => { cancelled = true; };
   }, []);
 
   const markSeen = useCallback(() => {
     setSeen(true);
-    void appStorage.setItem(ONBOARDING_KEY, 'true');
+    appStorage.setItem(ONBOARDING_KEY, 'true').catch(e => {
+      console.warn('ONBOARDING_FLAG_WRITE_FAILED:', e?.message ?? e);
+    });
   }, []);
 
   const replay = useCallback(() => {

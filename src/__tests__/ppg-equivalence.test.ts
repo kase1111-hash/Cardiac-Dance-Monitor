@@ -4,10 +4,7 @@
  * Tests the correlation and comparison computation, not the live camera/BLE
  * integration (which requires device hardware).
  */
-import {
-  EquivalenceAnalyzer,
-  type EquivalenceResult,
-} from '../camera/equivalence-analyzer';
+import { EquivalenceAnalyzer } from '../camera/equivalence-analyzer';
 
 describe('EquivalenceAnalyzer', () => {
   let analyzer: EquivalenceAnalyzer;

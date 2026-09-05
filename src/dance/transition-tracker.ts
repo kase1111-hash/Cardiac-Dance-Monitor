@@ -7,7 +7,8 @@
  * - If original dance returns before 20s: clear transient, no transition
  */
 
-const TRANSIENT_THRESHOLD_MS = 20_000;  // 20 seconds
+// A transient shorter than 20 s is displayed briefly but never committed;
+// the commit rule below (30 s) is the only threshold the code enforces.
 const COMMIT_THRESHOLD_MS = 30_000;     // 30 seconds
 
 export interface TransitionEvent {

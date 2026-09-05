@@ -4,8 +4,9 @@
  */
 import React, { useEffect, useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, SafeAreaView, ScrollView, TouchableOpacity, Alert,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { sessionStore } from '../../src/session/session-store-instance';
 import type { Session } from '../../src/session/session-types';
@@ -37,6 +38,12 @@ function formatOffset(timestamp: number, startTime: number): string {
 export default function SessionDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  // A cold deep link has nothing behind this screen, so back would be a
+  // no-op — go to the History tab instead.
+  const goBack = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/(tabs)/history');
+  };
   const [session, setSession] = useState<Session | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -64,7 +71,7 @@ export default function SessionDetailScreen() {
 
   if (!loaded) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
         <View style={styles.center}><Text style={styles.muted}>Loading...</Text></View>
       </SafeAreaView>
     );
@@ -72,10 +79,10 @@ export default function SessionDetailScreen() {
 
   if (!session) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
         <View style={styles.center}>
           <Text style={styles.muted}>Session not found</Text>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity onPress={goBack}>
             <Text style={styles.backLink}>Go back</Text>
           </TouchableOpacity>
         </View>
@@ -85,12 +92,13 @@ export default function SessionDetailScreen() {
 
   const color = getDanceColor(session.dominantDance);
   const emoji = getDanceEmoji(session.dominantDance);
-  const hasRaw = (session.rawBeats?.length ?? 0) > 0;
+  const rawCount = session.rawBeats?.length ?? session.rawBeatCount ?? 0;
+  const hasRaw = rawCount > 0;
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        <TouchableOpacity onPress={() => router.back()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+        <TouchableOpacity onPress={goBack} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Text style={styles.backLink}>‹ History</Text>
         </TouchableOpacity>
 
@@ -125,8 +133,8 @@ export default function SessionDetailScreen() {
             <Text style={styles.statLabel}>Gini mean</Text>
           </View>
           <View style={styles.statCell}>
-            <Text style={styles.statValue}>{session.rawBeats?.length ?? 0}</Text>
-            <Text style={styles.statLabel}>Raw beats</Text>
+            <Text style={styles.statValue}>{session.changeEvents.length}</Text>
+            <Text style={styles.statLabel}>Change events</Text>
           </View>
         </View>
 
@@ -183,7 +191,7 @@ export default function SessionDetailScreen() {
           <TouchableOpacity style={styles.actionRow} onPress={() => runExport(shareAsRawCSV, 'Raw Export')}>
             <Text style={styles.actionLabel}>Share Raw Beat Data</Text>
             <Text style={styles.actionDesc}>
-              Research-grade per-beat CSV ({session.rawBeats?.length} rows)
+              Research-grade per-beat CSV ({rawCount} rows)
             </Text>
           </TouchableOpacity>
         )}
@@ -271,7 +279,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   muted: {
-    color: '#475569',
+    color: '#64748b',
     fontSize: 13,
   },
   eventRow: {

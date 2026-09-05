@@ -28,18 +28,18 @@ export interface Session {
   endTime: number;
   dominantDance: string;
   beatCount: number;
-  changeEvents: Array<{
+  changeEvents: {
     timestamp: number;
     level: 'notice' | 'alert';
     distance: number;
     danceBefore: string;
     danceAfter: string;
-  }>;
-  danceTransitions: Array<{
+  }[];
+  danceTransitions: {
     timestamp: number;
     from: string;
     to: string;
-  }>;
+  }[];
   summaryStats: {
     bpmMean: number;
     kappaMedian: number;
@@ -47,4 +47,6 @@ export interface Session {
   };
   /** Per-beat raw data for research export. Optional for backward compat. */
   rawBeats?: RawBeat[];
+  /** Number of raw beats stored for this session (index rows carry only this). */
+  rawBeatCount?: number;
 }

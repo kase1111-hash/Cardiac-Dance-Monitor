@@ -10,14 +10,28 @@
  * scenario. Filtering them would defeat the purpose and produce wrong dance
  * features (the gate's 40% deviation rejection silently drops AF/PVC beats).
  */
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { RhythmSimulator, type RhythmScenario } from '../../shared/simulator';
 import { PPI_MIN, PPI_MAX } from '../../shared/constants';
+import { debugLog } from '../../shared/debug';
 import type {
   PulseOxInterface, ConnectionStatus, SignalQuality, PPIBeat,
 } from '../ble/ble-service';
 
 export type { PPIBeat };
+
+/**
+ * On-screen names for the simulated scenarios. The scenario ids are clinical
+ * abbreviations (af, chf, pvc) and were rendered verbatim in the header and
+ * under the BPM — exactly the clinical labels the design rules forbid.
+ */
+export const SCENARIO_LABELS: Record<RhythmScenario, string> = {
+  nsr: 'Waltz',
+  chf: 'Lock-Step',
+  af: 'Mosh Pit',
+  pvc: 'Stumble',
+  transition: 'Transition',
+};
 
 export function useSimulatedPulseOx(
   scenario: RhythmScenario = 'nsr',
@@ -33,11 +47,23 @@ export function useSimulatedPulseOx(
   // All mutable state in refs — no stale closures
   const simulatorRef = useRef(new RhythmSimulator({ scenario }));
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Deferred start() calls (connect's 300 ms, scenario change's 50 ms). These
+  // were untracked, so a source switch inside that window let start() fire
+  // after disconnect() and left an orphaned beat chain running for the rest
+  // of the session.
+  const startTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
   const seqRef = useRef(0);
 
   // Track scenario prop for display
   const scenarioRef = useRef(scenario);
+
+  const clearStartTimer = () => {
+    if (startTimerRef.current) {
+      clearTimeout(startTimerRef.current);
+      startTimerRef.current = null;
+    }
+  };
 
   /** Generate one beat, update state, schedule next. */
   const tick = useCallback(() => {
@@ -50,7 +76,7 @@ export function useSimulatedPulseOx(
 
     if (inRange) {
       seqRef.current++;
-      console.log('PPI_RECEIVED', ppi, 'seq=', seqRef.current);
+      debugLog('PPI_RECEIVED', ppi, 'seq=', seqRef.current);
       setLatestPPI(ppi);
       setLatestBeat({ ppi, seq: seqRef.current });
       setSignalQuality('good');
@@ -74,6 +100,7 @@ export function useSimulatedPulseOx(
 
   const stop = useCallback(() => {
     runningRef.current = false;
+    clearStartTimer();
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
@@ -98,7 +125,10 @@ export function useSimulatedPulseOx(
       setScenario(scenario);
       if (wasRunning) {
         // Restart after a microtask so stop() state settles
-        setTimeout(() => start(), 50);
+        startTimerRef.current = setTimeout(() => {
+          startTimerRef.current = null;
+          start();
+        }, 50);
       }
     }
   }, [scenario, stop, setScenario, start]);
@@ -110,6 +140,7 @@ export function useSimulatedPulseOx(
     }
     return () => {
       runningRef.current = false;
+      clearStartTimer();
       if (timerRef.current) {
         clearTimeout(timerRef.current);
         timerRef.current = null;
@@ -119,10 +150,16 @@ export function useSimulatedPulseOx(
 
   const connect = useCallback((_deviceId?: string) => {
     setConnectionStatus('connecting');
-    setTimeout(() => start(), 300);
+    clearStartTimer();
+    startTimerRef.current = setTimeout(() => {
+      startTimerRef.current = null;
+      start();
+    }, 300);
   }, [start]);
 
-  return {
+  const sourceName = `Simulated · ${SCENARIO_LABELS[scenario] ?? scenario}`;
+
+  return useMemo(() => ({
     devices: [{ id: 'sim-001', name: 'Simulated Pulse Ox', rssi: -40 }],
     connect,
     disconnect: stop,
@@ -130,7 +167,8 @@ export function useSimulatedPulseOx(
     latestPPI,
     latestBeat,
     signalQuality,
-    sourceName: `Simulated (${scenario.toUpperCase()})`,
+    sourceName,
+    statusMessage: null,
     setScenario,
-  };
+  }), [connect, stop, connectionStatus, latestPPI, latestBeat, signalQuality, sourceName, setScenario]);
 }
